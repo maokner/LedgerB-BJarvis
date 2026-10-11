@@ -54,10 +54,18 @@ export interface Action {
   meta?: EthTxMeta;
 }
 
-/** An EIP-1559 ETH transfer, filled by the server before it asks the Ethereum app to sign. Big numbers are decimal strings. */
+/** An EIP-1559 transaction, filled by the server before it asks the Ethereum app to sign. Big numbers are decimal strings. */
 export interface EthTxMeta {
   to: string;
   valueWei: string;
+  /** Call data, 0x hex. Unset or "0x": a plain ETH transfer. A USDC payment is transfer(to, amount) on the token contract. */
+  data?: string;
+  /**
+   * What the Ethereum app needs to clear-sign a token transfer: Ledger's signed descriptors of the ERC-20 tokens in
+   * the transaction (hw-app-eth's `erc20Tokens`), fetched by the server once at proposal time so neither the USB path
+   * nor the approval page has to reach Ledger's servers.
+   */
+  resolution?: { erc20Tokens: string[] };
   chainId: number;
   nonce: number;
   gasLimit: string;

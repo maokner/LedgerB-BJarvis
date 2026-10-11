@@ -16,7 +16,8 @@ export const NO_RESOLUTION: LedgerEthTransactionResolution = { erc20Tokens: [], 
 /** The three calls we need from the Ethereum app, in hw-app-eth's shapes (hex without 0x). */
 export interface EthApp {
   getAddress(display: boolean): Promise<string>;
-  signTransaction(unsignedTxHex: string): Promise<{ v: string; r: string; s: string }>;
+  /** `resolution`: token descriptors for clear signing (NO_RESOLUTION for a plain transfer). */
+  signTransaction(unsignedTxHex: string, resolution: LedgerEthTransactionResolution): Promise<{ v: string; r: string; s: string }>;
   signPersonalMessage(messageHex: string): Promise<{ v: number; r: string; s: string }>;
 }
 
@@ -38,16 +39,19 @@ export function unsignedTx(meta: EthTxMeta): Transaction {
     gasLimit: BigInt(meta.gasLimit),
     maxFeePerGas: BigInt(meta.maxFeePerGas),
     maxPriorityFeePerGas: BigInt(meta.maxPriorityFeePerGas),
-    data: "0x",
+    data: meta.data ?? "0x",
   });
 }
+
+/** The resolution the app signs `meta` with: the token descriptors the server fetched, else none. */
+export const resolutionOf = (meta: EthTxMeta): LedgerEthTransactionResolution => ({ ...NO_RESOLUTION, erc20Tokens: meta.resolution?.erc20Tokens ?? [] });
 
 /** Asks the open Ethereum app to do `request`. Throws what hw-app-eth throws (statusCode 0x6985 when rejected). */
 export async function askEthApp(app: EthApp, request: EthRequest): Promise<EthAnswer> {
   if (request.kind === "address") return { kind: "address", value: (await app.getAddress(true)).toLowerCase() };
   if (request.kind === "tx") {
     const tx = unsignedTx(request.meta);
-    const { v, r, s } = await app.signTransaction(tx.unsignedSerialized.slice(2));
+    const { v, r, s } = await app.signTransaction(tx.unsignedSerialized.slice(2), resolutionOf(request.meta));
     tx.signature = Signature.from({ r: `0x${r}`, s: `0x${s}`, v: parseInt(v, 16) });
     return { kind: "tx", value: tx.serialized };
   }

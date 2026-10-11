@@ -214,12 +214,17 @@ export function fakeEthDevices(wallets: Wallet[]) {
 }
 
 /** Base without a network: balances by address, a fixed price, and a record of broadcast transactions. */
-export function stubChain(balances: Record<string, bigint>, usdPerEth = 4000) {
+/** The Ledger USDC descriptor a stubbed Base hands out (any hex: the fake Ledger does not read it). */
+export const FAKE_USDC_DESCRIPTOR = "0455534443833589fcd6edb6e08f4c7c32d4f71b54bda02913000000060000210500";
+
+export function stubChain(balances: Record<string, bigint>, usdPerEth = 4000, usdc: Record<string, bigint> = {}) {
   const sent: string[] = [];
   const chain: Chain = {
     balanceWei: async (address) => balances[address.toLowerCase()] ?? 0n,
+    tokenBalance: async (_token, address) => usdc[address.toLowerCase()] ?? 0n,
     ethUsdPrice: async () => usdPerEth,
-    prepareTransfer: async () => ({ chainId: 8453, nonce: 7, gasLimit: 21_000n, maxFeePerGas: 10_000_000n, maxPriorityFeePerGas: 1_000_000n }),
+    prepareTransfer: async (_from, _to, _value, data) => ({ chainId: 8453, nonce: 7, gasLimit: data && data !== "0x" ? 60_000n : 21_000n, maxFeePerGas: 10_000_000n, maxPriorityFeePerGas: 1_000_000n }),
+    erc20Resolution: async () => [FAKE_USDC_DESCRIPTOR],
     broadcast: async (raw) => {
       sent.push(raw);
       return Transaction.from(raw).hash!;

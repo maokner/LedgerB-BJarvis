@@ -4,15 +4,19 @@
  * holds it. The treasury pays the gas of a refund itself, so the buyer gets back exactly what they sent.
  */
 import { getAddress, Wallet } from "ethers";
-import type { Chain } from "./chain.js";
+import { type Chain, erc20TransferData, formatUsdc, USDC } from "./chain.js";
 import { unsignedTx } from "./device/eth-tx.js";
+
+export type Asset = "ETH" | "USDC";
 
 export interface Treasury {
   /** Checksummed 0x address buyers pay. */
   readonly address: string;
+  /** False for a receive-only treasury (no key on this server): refunds are then sent by hand. */
+  readonly canRefund: boolean;
   balanceWei(): Promise<bigint>;
-  /** Sends `wei` from the treasury to `to` and returns the transaction hash. Throws when Base refuses it (no gas money, bad address). */
-  refund(to: string, wei: bigint): Promise<string>;
+  /** Sends `amount` (wei, or USDC units) from the treasury to `to` and returns the transaction hash. Throws when it cannot (no key, no funds, bad address). */
+  refund(to: string, amount: bigint, asset: Asset): Promise<string>;
 }
 
 export class TreasuryError extends Error {}
@@ -39,18 +43,25 @@ export function createTreasury(source: { privateKey?: string; address?: string }
   if (wallet && source.address?.trim() && getAddress(source.address.trim()) !== address) throw new TreasuryError("TREASURY_ADDRESS does not match TREASURY_PRIVATE_KEY");
   return {
     address,
+    canRefund: !!wallet,
     balanceWei: () => chain.balanceWei(address),
-    async refund(to, wei) {
+    async refund(to, amount, asset) {
       if (!wallet) throw new TreasuryError(`the treasury ${address} has no key on this server, so refunds are sent by hand`);
-      if (wei <= 0n) throw new TreasuryError("nothing to refund");
+      if (amount <= 0n) throw new TreasuryError("nothing to refund");
       const recipient = getAddress(to);
-      const plan = await chain.prepareTransfer(address, recipient, wei);
+      const usdc = asset === "USDC";
+      if (usdc) {
+        const have = await chain.tokenBalance(USDC.address, address);
+        if (have < amount) throw new TreasuryError(`the treasury holds ${formatUsdc(have)} USDC, less than the ${formatUsdc(amount)} USDC refund`);
+      }
+      const plan = await chain.prepareTransfer(address, usdc ? USDC.address : recipient, usdc ? 0n : amount, usdc ? erc20TransferData(recipient, amount) : undefined);
       const have = await chain.balanceWei(address);
-      const need = wei + plan.gasLimit * plan.maxFeePerGas;
+      const need = (usdc ? 0n : amount) + plan.gasLimit * plan.maxFeePerGas;
       if (need > have) throw new TreasuryError(`the treasury holds ${have} wei, less than the ${need} wei the refund needs with gas`);
       const tx = unsignedTx({
-        to: recipient,
-        valueWei: wei.toString(),
+        to: usdc ? USDC.address : recipient,
+        valueWei: usdc ? "0" : amount.toString(),
+        data: usdc ? erc20TransferData(recipient, amount) : undefined,
         chainId: plan.chainId,
         nonce: plan.nonce,
         gasLimit: plan.gasLimit.toString(),

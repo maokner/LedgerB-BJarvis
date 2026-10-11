@@ -21,7 +21,7 @@ export function ethAppOver(transport: Transport): EthApp {
   const eth = new Eth(transport);
   return {
     getAddress: async (display) => (await eth.getAddress(ETH_PATH, display)).address,
-    signTransaction: (hex) => eth.signTransaction(ETH_PATH, hex, NO_RESOLUTION),
+    signTransaction: (hex, resolution) => eth.signTransaction(ETH_PATH, hex, resolution),
     signPersonalMessage: async (hex) => {
       const { v, r, s } = await eth.signPersonalMessage(ETH_PATH, hex);
       // Guard the shape, so a surprise surfaces as an error instead of a bad signature.

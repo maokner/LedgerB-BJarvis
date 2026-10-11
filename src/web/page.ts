@@ -74,13 +74,13 @@ export function page(v: PageView): string {
   const n = at[v.status] ?? 1;
   const steps = STEPS.map((name, i) => `<li class="${i < n ? "done" : i === n ? (v.status === "rejected" || v.status === "expired" || v.status === "failed" ? "fail" : "now") : ""}"><i></i><span>${name}</span></li>`).join("");
   const amount = isTxCode(action.code) ? action.fields.find((f) => f.label === "Amount") : undefined;
-  const eth = isTxCode(action.code) ? action.fields.find((f) => f.label === "ETH") : undefined;
+  const eth = isTxCode(action.code) ? action.fields.find((f) => f.label === "ETH" || f.label === "USDC") : undefined;
   const rows = action.fields
     .filter((f) => f !== amount && f !== eth)
     .map((f) => `<div${isAddress(f.value) ? ' class="addr"' : ""}><dt>${esc(f.label)}</dt><dd>${esc(f.value)}</dd></div>`)
     .join("");
   const top = amount
-    ? `<div class="top"><span class="price">${esc(amount.value)}${eth ? `<small>${esc(eth.value)} ETH</small>` : ""}</span><span class="chip">Base</span></div>`
+    ? `<div class="top"><span class="price">${esc(amount.value)}${eth ? `<small>${esc(eth.value)} ${esc(eth.label)}</small>` : ""}</span><span class="chip">Base</span></div>`
     : "";
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">

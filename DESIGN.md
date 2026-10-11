@@ -80,7 +80,7 @@ Field conventions (the server builds them, the device just shows them):
 | FRQ | `To @yadu` |
 | FAC | `From @matt` |
 | DEL | `Tag @matt`, `Address 0x...` (the full lowercase address) |
-| BUY | `Item Trident Original Sugar Free Gum...` (the title, cut to one line), `Total $4.35` (item, shipping and tax), `ETH 0.001087`, `To 0x...` (the treasury) |
+| BUY | `Item Trident Original Sugar Free Gum...` (the title, cut to one line), `Total $4.35` (item, shipping and tax), `USDC 4.35`, `To 0x...` (the treasury) |
 
 ## Device manager
 
@@ -95,6 +95,7 @@ Devices come from `DEVICES` in the environment: `speculos:<host>:<port>` entries
 `DEVICE_MODE=eth` (default, the real thing): the Ledger's own Ethereum app.
 An account is the device's address at m/44'/60'/0'/0/0, verified on screen at signup.
 `PAY` is a real EIP-1559 ETH transfer on Base mainnet that the Ethereum app clear-signs (amount, address, fees); the server broadcasts the signed transaction and stores the hash.
+`BUY` is a USDC transfer on Base (a call on the token contract) that the app clear-signs the same way once the server hands it Ledger's signed token descriptor (`EthTxMeta.resolution`, fetched from Ledger's crypto-assets list at proposal time).
 `CAL`, `FRQ`, `FAC`, `DEL` are personal messages (`actionMessage()` in `src/actions.ts`) shown in full on the device and verified with ecrecover.
 `DEVICE_MODE=agentsign` (offline demo): the custom Nano S Plus app in `device-app/`, demo dollars, Speculos.
 
@@ -154,9 +155,10 @@ Only accepted friends can be reached; the engine composes the note in the owner'
 
 ## Buying on Amazon (`src/purchases.ts`, `src/merchant.ts`, `src/amazon/`, `src/treasury.ts`)
 
-Amazon takes cards, not ETH, so the operator fronts the purchase: owners pay ETH to the operator's **treasury** wallet on Base, and the server orders the item on the operator's own Amazon account with the card saved there.
-The treasury is the escrow: it holds the ETH from the Ledger's signature until Amazon confirms the order, and sends it back when nothing was ordered.
-It is custodial (a wallet the server holds the key of), not a smart contract; the on-chain record is the two plain transfers.
+Amazon takes cards, not crypto, so the operator fronts the purchase: owners pay USDC on Base to the operator's **treasury** address, and the server orders the item on the operator's own Amazon account with the card saved there.
+With a key on the server the treasury is the escrow: it holds the USDC from the Ledger's signature until Amazon confirms the order, and sends it back when nothing was ordered.
+It is custodial (a wallet the server holds the key of), not a smart contract; the on-chain record is the two token transfers.
+The deployed configuration is a receive-only treasury (`TREASURY_ADDRESS`, no key) with the mock store, so there the escrow is only a hold at an address: nothing fails, nothing is refunded.
 
 ```
 owner: "buy me trident gum"
@@ -164,14 +166,14 @@ owner: "buy me trident gum"
   engine: propose_action BUY Item <asin>
           ──► merchant.prepare: Buy Now, read the exact order total, leave   (nothing held)
           ──► cap: total <= PURCHASE_LIMIT_USD (default $20), else an error the model reports
-          ──► money.transfer: wei for the total at the Coinbase spot price, fees, balance check
-          ──► purchases row "proposed"; BUY on the Ledger (the Ethereum app clear-signs the transfer)
+          ──► money.transferUsdc: USDC units for the total, the USDC balance, gas in ETH, Ledger's token descriptor
+          ──► purchases row "proposed"; BUY on the Ledger (the Ethereum app clear-signs "4.35 USDC" to the treasury)
   signed  ──► tx broadcast, row "funded", text "Paid ..."
   receipt ──► Base confirms (3 tries of 2 min; failed: "cancelled"; still pending: "review")
           ──► row "ordering"            (the checkpoint: written before the side effect, never re-run)
           ──► merchant.confirm: Buy Now again, same item, same total, Place your order
                 ordered      ──► row "ordered", text "Ordered on Amazon: ..., Order 111-..."
-                no_purchase  ──► row "refunding", treasury pays the ETH back (gas on the treasury), "refunded", text with the basescan link
+                no_purchase  ──► row "refunding", treasury pays the USDC back (gas on the treasury), "refunded", text with the basescan link
                 uncertain    ──► row "review", the owner and the operator are texted; nothing is retried or refunded
 ```
 
@@ -184,7 +186,7 @@ The treasury can be receive-only (`TREASURY_ADDRESS`, the deployed default `0xf8
 `src/amazon/browser.ts` is the real one: Playwright Chromium with the operator's exported Amazon session (`pnpm amazon:login` writes it; `AMAZON_STORAGE_STATE` carries it), **Buy Now** only (never the cart, which may hold the operator's own things), exactly one item on the checkout page or it stops, screenshots on every failure in `data/amazon-shots/`, and `AMAZON_DRY_RUN=1` to go through everything but the order button.
 Its checkout selectors are built from Amazon's known layouts and still need a signed-in dry run against the real account.
 
-Texts to the owner, one per step: the reply with the confirm prompt (item, total all in, ETH, treasury address, where it ships, "comes back to you if the order doesn't go through"), "Paid ..." with the basescan link once broadcast, then "Ordered on Amazon ..." or "Amazon didn't take the order (...), your ETH is on its way back" or "I couldn't tell whether Amazon took the order ...".
+Texts to the owner, one per step: the reply with the confirm prompt (item, total all in, USDC, treasury address, where it ships, and "comes back to you if the order doesn't go through" only when the treasury can refund), "Paid ..." with the basescan link once broadcast, then "Order confirmed on Amazon ..." or "Amazon didn't take the order (...), your USDC is on its way back" or "I couldn't tell whether Amazon took the order ...".
 Outcomes are also system notes in the owner's history, so the next turn can answer "did it ship?".
 The operator (`OPERATOR_TAG`) is texted only for `review` and `refund_failed`.
 Everything ships to the Amazon account's default address (`PURCHASE_SHIPS_TO` says so to buyers); an order is one unit of one item.

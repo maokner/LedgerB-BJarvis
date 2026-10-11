@@ -10,7 +10,7 @@
 import { createRequire } from "node:module";
 import type { Action, DeviceInfo, DeviceManager, SignOptions, SignResult } from "../types.js";
 import { APP_AND_VERSION_APDU, parseAppName, splitResponse, SW_DENIED } from "./apdu.js";
-import { askEthApp, ETH_PATH, type EthApp, NO_RESOLUTION } from "./eth-tx.js";
+import { askEthApp, ETH_PATH, type EthApp } from "./eth-tx.js";
 import { ethProof, ethRequest } from "./eth-verify.js";
 import { listHidPaths } from "./transport-hid.js";
 
@@ -147,7 +147,7 @@ export function hidEthEndpoint(path: string): EthEndpoint {
         close,
         app: {
           getAddress: async (display) => (await eth.getAddress(ETH_PATH, display)).address,
-          signTransaction: (hex) => eth.signTransaction(ETH_PATH, hex, NO_RESOLUTION),
+          signTransaction: (hex, resolution) => eth.signTransaction(ETH_PATH, hex, resolution),
           signPersonalMessage: (hex) => eth.signPersonalMessage(ETH_PATH, hex),
         },
       };

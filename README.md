@@ -248,13 +248,14 @@ The scopes are `calendar.events` (read and write events) and `calendar.calendars
 
 ## Buying on Amazon
 
-Owners can buy small things on Amazon and pay in ETH: "buy me a pack of trident gum".
-Amazon takes cards, not ETH, so the operator (you) fronts it: the owner's ETH goes to a **treasury** wallet you control, and the server orders with your own Amazon account and the card saved there, at most `PURCHASE_LIMIT_USD` (default $20) per order, item, shipping and tax included.
-The treasury holds the ETH until Amazon confirms the order and sends it back automatically when nothing was ordered; anything unclear is flagged to you instead of retried.
+Owners can buy small things on Amazon and pay in USDC on Base: "buy me a pack of trident gum".
+Amazon takes cards, not crypto, so the operator (you) fronts it: the owner's USDC goes to a **treasury** address you control, and the server orders with your own Amazon account and the card saved there, at most `PURCHASE_LIMIT_USD` (default $20) per order, item, shipping and tax included.
+The Ledger clear-signs the USDC transfer (the server fetches Ledger's token descriptor so the device shows "4.35 USDC" and the address, no blind signing); the owner needs a little ETH at their address for the fee.
+With a treasury key on the server, the treasury holds the USDC until Amazon confirms the order and sends it back automatically when nothing was ordered; anything unclear is flagged to you instead of retried.
 The design notes in `DESIGN.md` ("Buying on Amazon") spell out the state machine.
 
 The deployed configuration (`fly.toml`) is the demo one: owners pay the treasury `0xf8381484CD2639618c690572aB35ff65E4bd7C5e` and `AMAZON_MERCHANT=mock` confirms every order with a generated order number after real amazon.com search and prices, buying nothing.
-The treasury there is receive-only (no key on the server), which is fine because a mock order never fails and so never refunds.
+The treasury there is receive-only (no key on the server), so there is no refund path: fine, because a mock order never fails.
 
 Setup for real orders, Ethereum mode only:
 
@@ -271,7 +272,7 @@ Setup for real orders, Ethereum mode only:
 To try the flow without Amazon, set `AMAZON_MERCHANT=demo` with the dev channel: a built-in catalog, orders that never happen.
 
 How a purchase goes: the engine searches Amazon (`search_amazon`), picks the item that fits and proposes **Buy on Amazon** with the exact checkout total; the Ledger shows the ETH transfer to the treasury; once Base confirms it the server runs the checkout with **Buy Now** (never your cart), checks that exactly one item at the quoted total is on the page, and presses Place your order.
-The owner gets one text per step: the confirm prompt, "Paid ...", then "Ordered on Amazon ... Order 111-..." or "Amazon didn't take the order (...), your ETH is on its way back" with the basescan link.
+The owner gets one text per step: the confirm prompt, "Paid ...", then "Order confirmed on Amazon ... Order 111-..." or, with a refunding treasury, "Amazon didn't take the order (...), your USDC is on its way back" with the basescan link.
 Amazon's checkout pages change and the driver was written from their known layouts, so do the first run with `AMAZON_DRY_RUN=1` and a signed-in session; `data/amazon-shots/` has a screenshot of every step that did not go as expected.
 The server runs headless Chromium for this, which is why the Fly machine has 1 GB.
 
@@ -426,7 +427,7 @@ Set them in `.env` (see `.env.example`) or in the shell.
 | `PUBLIC_URL` | `http://127.0.0.1:7788` | Base of the links in approval texts. Must be https (ngrok, `tailscale serve`) for other computers. |
 | `WEB_HOST` | `127.0.0.1` | Interface the approval page listens on. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | none | OAuth web client that lets owners connect their Google Calendar (eth mode). Redirect URI: `PUBLIC_URL/google/callback`. See "Google Calendar". |
-| `TREASURY_PRIVATE_KEY` | none | The wallet that receives buyers' ETH and refunds them (eth mode). See "Buying on Amazon". |
+| `TREASURY_PRIVATE_KEY` | none | The wallet that receives buyers' USDC and refunds them (eth mode). See "Buying on Amazon". |
 | `AMAZON_STORAGE_STATE`, `AMAZON_STORAGE_STATE_PATH` | none | Your Amazon session from `pnpm amazon:login`, as JSON or base64, or a path to the file. |
 | `TREASURY_ADDRESS` | none | A receive-only treasury (no refunds from the server); with `TREASURY_PRIVATE_KEY` the two must match. |
 | `AMAZON_MERCHANT` | `browser` with a session | `mock` (real search and prices, every order confirmed, nothing bought), `browser` (amazon.com through Chromium) or `demo` (a built-in catalog). |

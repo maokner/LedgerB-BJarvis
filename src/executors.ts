@@ -84,7 +84,8 @@ export function execute(db: Db, ctx: ExecContext, action: Action): ExecResult {
       // The ETH is on its way to the treasury; src/purchases.ts takes it from here (receipt, order, refund).
       if (!ctx.txHash) throw new ExecutorError("Buying needs a payment on Base, so nothing happened.");
       const item = need(action, "Item");
-      return done([{ handle: ownerHandle, text: `Paid ${need(action, "ETH")} ETH (${need(action, "Total")}) to the treasury on Base for ${item}. I'll place the Amazon order as soon as Base confirms it. ${txLink(ctx.txHash)}` }]);
+      const amount = field(action, "USDC") ? `${field(action, "USDC")} USDC` : `${need(action, "ETH")} ETH`;
+      return done([{ handle: ownerHandle, text: `Paid ${amount} (${need(action, "Total")}) to the treasury on Base for ${item}. I'll place the Amazon order as soon as Base confirms it. ${txLink(ctx.txHash)}` }]);
     }
     case "CAL": {
       // The owner's own event, or their side of a meeting (With @friend) when their policy sends meetings to the Ledger.

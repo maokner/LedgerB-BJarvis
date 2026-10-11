@@ -1,15 +1,16 @@
 /** Buying on Amazon with ETH: the demo store, a treasury wallet, fake Ledgers running the Ethereum app, and a stubbed Base. */
 import { parseEther, Transaction, Wallet } from "ethers";
+import { erc20TransferData, USDC } from "../src/chain.js";
 import { describe, expect, it } from "vitest";
 import { newActionId } from "../src/actions.js";
 import { openDb } from "../src/db.js";
 import { signOnEthApp, verifyEthSignature } from "../src/device/eth.js";
 import { alwaysOrderedMerchant, DEMO_CATALOG, demoMerchant, type DemoItem, type Outcome } from "../src/merchant.js";
-import { baseMoney, usdToWei } from "../src/money.js";
+import { baseMoney } from "../src/money.js";
 import { createPurchases, type Purchases } from "../src/purchases.js";
 import { createTreasury } from "../src/treasury.js";
 import type { Action } from "../src/types.js";
-import { call, delegate, fakeChannel, fakeEthApp, fakeEthDevices, harness, isEngine, PHONES, say, stubChain } from "./helpers.js";
+import { call, delegate, FAKE_USDC_DESCRIPTOR, fakeChannel, fakeEthApp, fakeEthDevices, harness, isEngine, PHONES, say, stubChain } from "./helpers.js";
 
 const matt = new Wallet(Wallet.createRandom().privateKey);
 const vault = new Wallet(Wallet.createRandom().privateKey);
@@ -19,8 +20,12 @@ const GUM = DEMO_CATALOG[0]!; // $3.99, $4.35 all in
 const MOUSE = DEMO_CATALOG[3]!; // $99.99
 
 /** The whole app in Ethereum mode with one buyer (@matt), the demo store and a funded treasury. */
-async function setup(options: { catalog?: DemoItem[]; treasuryEth?: string; receipt?: "confirmed" | "failed" | "timeout"; onConfirm?: (q: { asin: string }) => Outcome | undefined } = {}) {
-  const { chain, sent } = stubChain({ [addr(matt)]: parseEther("0.05"), [addr(vault)]: parseEther(options.treasuryEth ?? "0.01") });
+async function setup(options: { catalog?: DemoItem[]; treasuryEth?: string; mattUsdc?: bigint; receipt?: "confirmed" | "failed" | "timeout"; onConfirm?: (q: { asin: string }) => Outcome | undefined } = {}) {
+  const { chain, sent } = stubChain(
+    { [addr(matt)]: parseEther("0.05"), [addr(vault)]: parseEther(options.treasuryEth ?? "0.01") },
+    4000,
+    { [addr(matt)]: options.mattUsdc ?? 50_000_000n, [addr(vault)]: 10_000_000n },
+  );
   if (options.receipt) chain.waitForReceipt = async () => options.receipt!;
   const devices = fakeEthDevices([matt]);
   const money = baseMoney(chain);
@@ -43,7 +48,8 @@ const buyScript = (asin: string, afterSearch?: (json: string) => void) => [
   (req: Parameters<typeof isEngine>[0]) => {
     expect(isEngine(req)).toBe(true);
     expect(req.tools.map((t) => t.name)).toEqual(expect.arrayContaining(["search_amazon", "list_purchases", "propose_action"]));
-    expect(req.system).toContain("Amazon: @matt can buy things there through you, up to $20.00 per order all in");
+    expect(req.system).toContain("Amazon: @matt can buy things there through you, up to $20.00 per order all in, paid in USDC on Base");
+    expect(req.system).toContain("Balance: 0.05 ETH ($200.00) and 50 USDC on Base.");
     return call("search_amazon", { query: "trident gum" });
   },
   (req: Parameters<typeof isEngine>[0]) => {
@@ -66,29 +72,29 @@ describe("buying on Amazon with ETH", () => {
     );
     await h.send(PHONES.matt, "buy me some trident gum");
 
-    // The Ledger saw a transfer of the all-in total to the treasury.
+    // The Ledger saw a USDC transfer of the all-in total to the treasury: a call on the token contract, no ETH.
     expect(h.sent).toHaveLength(1);
     const tx = Transaction.from(h.sent[0]!);
-    expect([tx.from, tx.to, tx.value]).toEqual([matt.address, h.treasury.address, usdToWei(435, 4000)]);
+    expect([tx.from, tx.to, tx.value, tx.data]).toEqual([matt.address, USDC.address, 0n, erc20TransferData(h.treasury.address, 4_350_000n)]);
     const action = h.db.action((h.db.raw.prepare("select id from actions where code = 'BUY'").get() as { id: string }).id)!;
     expect(action.fields).toEqual([
       { label: "Item", value: "Trident Original Sugar Free Gum, 14 Pieces (P..." },
       { label: "Total", value: "$4.35" },
-      { label: "ETH", value: "0.001087" },
+      { label: "USDC", value: "4.35" },
       { label: "To", value: h.treasury.address },
     ]);
     expect([action.status, action.tx_hash]).toEqual(["executed", tx.hash]);
 
     const purchase = h.db.purchase(action.id)!;
-    expect(purchase).toMatchObject({ status: "ordered", asin: GUM.asin, total_cents: 435, fund_tx_hash: tx.hash, buyer: addr(matt), treasury: h.treasury.address });
+    expect(purchase).toMatchObject({ status: "ordered", asin: GUM.asin, total_cents: 435, wei: "4350000", asset: "USDC", fund_tx_hash: tx.hash, buyer: addr(matt), treasury: h.treasury.address });
     expect(purchase.order_id).toMatch(/^\d{3}-\d{7}-\d{7}$/);
     expect(h.merchant.confirmed.map((q) => q.asin)).toEqual([GUM.asin]);
 
     const link = `https://basescan.org/tx/${tx.hash}`;
     expect(h.to(PHONES.matt).slice(-3)).toEqual([
-      `Gum coming right up.\n\nPlease confirm on your Ledger: Buy on Amazon: Trident Original Sugar Free Gum, 14 Pieces (P..., $4.35 all in. That is 0.001087 ETH to the AgentSign treasury ${h.treasury.address}; it ships to Matt's address, and comes back to you if the order doesn't go through.`,
-      `Paid 0.001087 ETH ($4.35) to the treasury on Base for Trident Original Sugar Free Gum, 14 Pieces (P.... I'll place the Amazon order as soon as Base confirms it. ${link}`,
-      `Order confirmed on Amazon: ${GUM.title}. Order ${purchase.order_id}, paid 0.001087 ETH ($4.35). It ships to Matt's address.`,
+      `Gum coming right up.\n\nPlease confirm on your Ledger: Buy on Amazon: Trident Original Sugar Free Gum, 14 Pieces (P..., $4.35 all in. That is 4.35 USDC to the AgentSign treasury ${h.treasury.address}; it ships to Matt's address, and comes back to you if the order doesn't go through.`,
+      `Paid 4.35 USDC ($4.35) to the treasury on Base for Trident Original Sugar Free Gum, 14 Pieces (P.... I'll place the Amazon order as soon as Base confirms it. ${link}`,
+      `Order confirmed on Amazon: ${GUM.title}. Order ${purchase.order_id}, paid 4.35 USDC ($4.35). It ships to Matt's address.`,
     ]);
     // No generic "Confirmed on Base" text: the order text is the confirmation.
     expect(h.to(PHONES.matt).some((t) => t.startsWith("Confirmed on Base"))).toBe(false);
@@ -96,7 +102,7 @@ describe("buying on Amazon with ETH", () => {
     // The next turn knows about it.
     const notes = h.db.recentMessages(h.owner.id).filter((m) => m.role === "system").map((m) => (m.content as { content: string }).content);
     expect(notes.at(-1)).toBe(`Amazon purchase Trident Original Sugar Free Gum, 14 Pieces (P... ($4.35): ordered on Amazon, order ${purchase.order_id}.`);
-    expect(h.purchases.list(h.owner.id)).toEqual([expect.objectContaining({ item: GUM.title, total: "$4.35", status: "ordered", order: purchase.order_id, payment: link })]);
+    expect(h.purchases.list(h.owner.id)).toEqual([expect.objectContaining({ item: GUM.title, total: "$4.35", paid: "4.35 USDC", status: "ordered", order: purchase.order_id, payment: link })]);
   });
 
   it("refuses anything over the limit before the Ledger is involved", async () => {
@@ -113,6 +119,21 @@ describe("buying on Amazon with ETH", () => {
     expect(h.sent).toHaveLength(0);
     expect(h.db.raw.prepare("select count(*) as n from purchases").get()).toEqual({ n: 0 });
     expect(h.to(PHONES.matt).at(-1)).toBe("That mouse is over the $20 limit, sorry.");
+  });
+
+  it("refuses when the owner has no USDC, before the Ledger is involved", async () => {
+    const h = await setup({ mattUsdc: 1_000_000n });
+    h.script(
+      ...buyScript(GUM.asin).slice(0, 3),
+      (req) => {
+        expect(req.messages.at(-1)!.content).toBe(`Error: not enough USDC on Base. The balance is 1 USDC at ${matt.address}; this needs 4.35 USDC. Tell the owner to send USDC on Base to their address; do not propose it.`);
+        return say("Not enough USDC.");
+      },
+      say("You need 4.35 USDC on Base for that; you have 1."),
+    );
+    await h.send(PHONES.matt, "buy me gum");
+    expect(h.sent).toHaveLength(0);
+    expect(h.db.purchasesIn(["proposed", "cancelled"])).toEqual([]);
   });
 
   it("a rejected BUY cancels the quote and moves nothing", async () => {
@@ -133,10 +154,10 @@ describe("buying on Amazon with ETH", () => {
     await h.send(PHONES.matt, "buy me gum");
     expect(h.sent).toHaveLength(2);
     const refund = Transaction.from(h.sent[1]!);
-    expect([refund.from, refund.to, refund.value]).toEqual([vault.address, matt.address, usdToWei(435, 4000)]);
+    expect([refund.from, refund.to, refund.value, refund.data]).toEqual([vault.address, USDC.address, 0n, erc20TransferData(matt.address, 4_350_000n)]);
     const purchase = h.db.purchasesIn(["refunded"])[0]!;
     expect([purchase.refund_tx_hash, purchase.error, purchase.order_id]).toEqual([refund.hash, "price changed", null]);
-    expect(h.to(PHONES.matt).at(-1)).toBe(`Amazon didn't take the order (price changed), so nothing was charged. Your 0.001087 ETH ($4.35) is on its way back: https://basescan.org/tx/${refund.hash}`);
+    expect(h.to(PHONES.matt).at(-1)).toBe(`Amazon didn't take the order (price changed), so nothing was charged. Your 4.35 USDC ($4.35) is on its way back: https://basescan.org/tx/${refund.hash}`);
     expect(h.to(OPERATOR)).toEqual([]);
   });
 
@@ -170,8 +191,8 @@ describe("buying on Amazon with ETH", () => {
     await h.send(PHONES.matt, "buy me gum");
     expect(h.sent).toHaveLength(1);
     const purchase = h.db.purchasesIn(["refund_failed"])[0]!;
-    expect(purchase.error).toMatch(/^refund of 0\.001087 ETH \(\$4\.35\) to 0x[0-9a-f]{40} failed: the treasury holds 0 wei/);
-    expect(h.to(PHONES.matt).at(-1)).toBe("Amazon didn't take the order (out of stock), so nothing was charged, but I couldn't send your 0.001087 ETH ($4.35) back automatically. Matt will sort it out.");
+    expect(purchase.error).toMatch(/^refund of 4\.35 USDC \(\$4\.35\) to 0x[0-9a-f]{40} failed: the treasury holds 0 wei/);
+    expect(h.to(PHONES.matt).at(-1)).toBe("Amazon didn't take the order (out of stock), so nothing was charged, but I couldn't send your 4.35 USDC ($4.35) back automatically. Matt will sort it out.");
     expect(h.to(OPERATOR)).toHaveLength(1);
   });
 
@@ -203,6 +224,24 @@ describe("buying on Amazon with ETH", () => {
     expect(verifyEthSignature(addr(matt), buy, result.signature)).toBe(true);
     expect(verifyEthSignature(addr(matt), { ...buy, meta: { ...meta, valueWei: "1" } }, result.signature)).toBe(false);
     expect(verifyEthSignature(addr(vault), buy, result.signature)).toBe(false);
+
+    // A USDC transfer: call data on the token contract, no ETH, and Ledger's token descriptor handed to the app.
+    const usdcMeta = { ...meta, to: USDC.address, valueWei: "0", data: erc20TransferData(vault.address, 4_350_000n), gasLimit: "60000", resolution: { erc20Tokens: [FAKE_USDC_DESCRIPTOR] } };
+    const usdcBuy: Action = { ...buy, id: newActionId(), meta: usdcMeta };
+    const resolutions: string[][] = [];
+    const app = fakeEthApp(matt);
+    const signTx = app.signTransaction.bind(app);
+    app.signTransaction = (hex, resolution) => {
+      resolutions.push(resolution.erc20Tokens);
+      return signTx(hex, resolution);
+    };
+    const usdcResult = await signOnEthApp(app, addr(matt), usdcBuy);
+    if (usdcResult.status !== "approved") throw new Error(JSON.stringify(usdcResult));
+    const usdcTx = Transaction.from(usdcResult.signature);
+    expect([usdcTx.to, usdcTx.value, usdcTx.data]).toEqual([USDC.address, 0n, usdcMeta.data]);
+    expect(resolutions).toEqual([[FAKE_USDC_DESCRIPTOR]]);
+    expect(verifyEthSignature(addr(matt), usdcBuy, usdcResult.signature)).toBe(true);
+    expect(verifyEthSignature(addr(matt), { ...usdcBuy, meta: { ...usdcMeta, data: erc20TransferData(vault.address, 1n) } }, usdcResult.signature)).toBe(false);
   });
 
   it("is not offered where buying is not set up, and demo money cannot buy", async () => {
@@ -241,7 +280,8 @@ describe("a store where every order is confirmed, and a treasury without a key",
     const { chain } = stubChain({});
     const receiveOnly = createTreasury({ address: "0xf8381484CD2639618c690572aB35ff65E4bd7C5e" }, chain);
     expect(receiveOnly.address).toBe("0xf8381484CD2639618c690572aB35ff65E4bd7C5e");
-    await expect(receiveOnly.refund(matt.address, 1n)).rejects.toThrow("has no key on this server");
+    expect(receiveOnly.canRefund).toBe(false);
+    await expect(receiveOnly.refund(matt.address, 1n, "USDC")).rejects.toThrow("has no key on this server");
     expect(() => createTreasury({ address: "nope" }, chain)).toThrow("TREASURY_ADDRESS is not a valid 0x address");
   });
 });
@@ -258,7 +298,7 @@ describe("purchase recovery after a restart", () => {
     const ids = statusRows.map((row, i) => {
       const id = newActionId();
       db.insertAction(owner.id, { code: "BUY", id, fields: [{ label: "Item", value: "Gum" }] });
-      db.insertPurchase({ action_id: id, account_id: owner.id, asin: GUM.asin, title: GUM.title, quote: JSON.stringify(quote), total_cents: 435, wei: usdToWei(435, 4000).toString(), treasury: vault.address, buyer: addr(matt) });
+      db.insertPurchase({ action_id: id, account_id: owner.id, asin: GUM.asin, title: GUM.title, quote: JSON.stringify(quote), total_cents: 435, wei: "4350000", asset: "USDC", treasury: vault.address, buyer: addr(matt) });
       if (row.status !== "proposed") db.setPurchaseStatus(id, row.status, { fundTxHash: row.hash ?? `0x${String(i).padStart(64, "0")}` });
       return id;
     });

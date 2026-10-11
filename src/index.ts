@@ -8,7 +8,7 @@ import { createApp } from "./app.js";
 import { createCalendar } from "./calendar/google.js";
 import { createDevChannel, createIMessageChannel, createTelegramChannel } from "./channels/index.js";
 import { openDb } from "./db.js";
-import { createBaseChain } from "./chain.js";
+import { createBaseChain, formatUsdc, USDC } from "./chain.js";
 import { combineDeviceManagers, createDeviceManager, createEthDeviceManager, createRemoteDeviceManager, parseDevicesEnv } from "./device/index.js";
 import { createAmazonMerchant } from "./amazon/browser.js";
 import { alwaysOrderedMerchant, demoMerchant, type Merchant } from "./merchant.js";
@@ -202,7 +202,10 @@ async function setupPurchases(): Promise<Purchases | undefined> {
     log,
   });
   log(`amazon: on (${kind}${process.env.AMAZON_DRY_RUN ? ", dry run" : ""}), limit $${limitUsd.toFixed(2)} per order, treasury ${treasury.address}${key ? "" : " (receive only, refunds by hand)"}, ships to ${purchases.shipsTo}`);
-  treasury.balanceWei().then((wei) => log(`amazon: treasury holds ${formatEth(wei)} ETH for refunds and gas`), (err: unknown) => log(`amazon: could not read the treasury balance: ${(err as Error).message}`));
+  Promise.all([treasury.balanceWei(), chain.tokenBalance(USDC.address, treasury.address)]).then(
+    ([wei, usdc]) => log(`amazon: treasury holds ${formatUsdc(usdc)} USDC and ${formatEth(wei)} ETH`),
+    (err: unknown) => log(`amazon: could not read the treasury balance: ${(err as Error).message}`),
+  );
   // A browser session that is signed out shows up in the log at start, not at the first purchase.
   merchant.warm?.().then(() => log("amazon: session ready"), (err: unknown) => log(`amazon: WARNING ${(err as Error).message}`));
   return purchases;

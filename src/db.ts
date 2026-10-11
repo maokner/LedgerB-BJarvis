@@ -129,9 +129,10 @@ export interface Purchase {
   asin: string;
   title: string;
   quote: string;
-  /** What the owner paid, in USD cents at the quote, and in wei at the spot price then. */
+  /** What the owner paid: USD cents at the quote, and the on-chain amount (USDC units, or wei for older ETH rows) in `asset`. */
   total_cents: number;
   wei: string;
+  asset: "ETH" | "USDC";
   /** The treasury address the ETH went to, and the buyer's address a refund goes back to. */
   treasury: string;
   buyer: string;
@@ -202,7 +203,7 @@ create table if not exists signing_jobs (
   created_at text not null default (datetime('now')), expires_at text not null);
 create table if not exists purchases (
   action_id text primary key, account_id integer not null, asin text not null, title text not null, quote text not null,
-  total_cents integer not null, wei text not null, treasury text not null, buyer text not null,
+  total_cents integer not null, wei text not null, asset text not null default 'ETH', treasury text not null, buyer text not null,
   status text not null check (status in ('proposed','cancelled','funded','ordering','ordered','refunding','refunded','refund_failed','review')),
   fund_tx_hash text, order_id text, refund_tx_hash text, error text,
   created_at text not null default (datetime('now')), updated_at text not null default (datetime('now')));
@@ -233,6 +234,8 @@ export function openDb(path = "data/agentsign.db") {
   for (const col of ["username", "display_name"]) if (!columns("accounts").includes(col)) db.exec(`alter table accounts add column ${col} text`);
   // Databases created before Google Calendar lack events.google_event_id.
   if (!columns("events").includes("google_event_id")) db.exec("alter table events add column google_event_id text");
+  // Purchases paid in ETH came before the USDC leg.
+  if (!columns("purchases").includes("asset")) db.exec("alter table purchases add column asset text not null default 'ETH'");
   // Databases created before the Ledger policy lack accounts.policy.
   if (!columns("accounts").includes("policy")) db.exec("alter table accounts add column policy text");
 
@@ -447,10 +450,10 @@ export function openDb(path = "data/agentsign.db") {
     expireSigningJobs: () => run("update signing_jobs set status = 'expired' where status = 'pending'").changes,
 
     // Amazon purchases paid in ETH (src/purchases.ts)
-    insertPurchase: (p: Pick<Purchase, "action_id" | "account_id" | "asin" | "title" | "quote" | "total_cents" | "wei" | "treasury" | "buyer">) =>
+    insertPurchase: (p: Pick<Purchase, "action_id" | "account_id" | "asin" | "title" | "quote" | "total_cents" | "wei" | "asset" | "treasury" | "buyer">) =>
       run(
-        "insert into purchases (action_id, account_id, asin, title, quote, total_cents, wei, treasury, buyer, status) values (?, ?, ?, ?, ?, ?, ?, ?, ?, 'proposed')",
-        p.action_id, p.account_id, p.asin, p.title, p.quote, p.total_cents, p.wei, p.treasury, p.buyer,
+        "insert into purchases (action_id, account_id, asin, title, quote, total_cents, wei, asset, treasury, buyer, status) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'proposed')",
+        p.action_id, p.account_id, p.asin, p.title, p.quote, p.total_cents, p.wei, p.asset, p.treasury, p.buyer,
       ),
     purchase: (actionId: string) => one<Purchase>("select * from purchases where action_id = ?", actionId),
     setPurchaseStatus(actionId: string, status: PurchaseStatus, extra: { fundTxHash?: string; orderId?: string; refundTxHash?: string; error?: string } = {}) {

@@ -12,7 +12,7 @@
  * "ordering" is written before the order is placed and is never re-run, so a crash cannot order twice.
  */
 import { newActionId, toFieldText } from "./actions.js";
-import { txLink } from "./chain.js";
+import { formatUsdc, txLink } from "./chain.js";
 import type { Account, Db, Purchase, PurchaseStatus } from "./db.js";
 import { formatCents } from "./format.js";
 import { type Merchant, MerchantError, type Quote, shortTitle } from "./merchant.js";
@@ -46,6 +46,8 @@ export interface Purchases {
   readonly limitCents: number;
   readonly shipsTo: string;
   readonly treasuryAddress: string;
+  /** Whether the treasury can send a buyer's money back from this server. */
+  readonly refunds: boolean;
   /** Products for the model, as JSON, or an "Error: ..." line. */
   search(query: string, limit?: number): Promise<string>;
   /** The BUY action for one unit of `asin` (quote, cap, ETH transfer to the treasury), or an "Error: ..." line for the model. */
@@ -88,8 +90,9 @@ export function createPurchases(o: PurchasesOptions): Purchases {
     db.setPurchaseStatus(p.action_id, status, extra);
     log(`purchase ${p.action_id.slice(0, 8)} ${shortTitle(p.title, 30)} -> ${status}${extra.error ? `: ${extra.error}` : ""}`);
   };
-  // 18 decimals: the exact amount the Ledger showed (usdToWei rounds to 4 significant digits, so it stays short).
-  const paid = (p: Purchase) => `${formatEth(BigInt(p.wei), 18)} ETH (${formatCents(p.total_cents)})`;
+  // The exact amount the Ledger showed (18 decimals for ETH: usdToWei rounds to 4 significant digits, so it stays short).
+  const amount = (p: Purchase) => (p.asset === "USDC" ? `${formatUsdc(BigInt(p.wei))} USDC` : `${formatEth(BigInt(p.wei), 18)} ETH`);
+  const paid = (p: Purchase) => `${amount(p)} (${formatCents(p.total_cents)})`;
 
   /** Something a person must look at: the operator hears about it (and the owner, in `ownerText`). */
   async function escalate(p: Purchase, status: "review" | "refund_failed", why: string, ownerText: string): Promise<void> {
@@ -105,7 +108,7 @@ export function createPurchases(o: PurchasesOptions): Purchases {
     set(p, "refunding", { error: reason });
     let hash: string;
     try {
-      hash = await treasury.refund(p.buyer, BigInt(p.wei));
+      hash = await treasury.refund(p.buyer, BigInt(p.wei), p.asset);
     } catch (err) {
       const why = `refund of ${paid(p)} to ${p.buyer} failed: ${(err as Error).message}`;
       return escalate(p, "refund_failed", why, `Amazon didn't take the order (${reason}), so nothing was charged, but I couldn't send your ${paid(p)} back automatically. ${operator.name} will sort it out.`);
@@ -153,6 +156,7 @@ export function createPurchases(o: PurchasesOptions): Purchases {
     limitCents,
     shipsTo,
     treasuryAddress: treasury.address,
+    refunds: treasury.canRefund,
 
     async search(query, limit = 5) {
       const q = query.replace(/\s+/g, " ").trim();
@@ -188,7 +192,7 @@ export function createPurchases(o: PurchasesOptions): Purchases {
       if (quote.totalCents > limitCents) {
         return `Error: ${shortTitle(quote.title, 60)} costs ${formatCents(quote.totalCents)} all in (item ${formatCents(quote.itemCents)} plus shipping and tax), over the ${formatCents(limitCents)} limit. Tell the owner; do not propose it.`;
       }
-      const transfer = await money.transfer(owner, treasury.address, quote.totalCents);
+      const transfer = await money.transferUsdc(owner, treasury.address, quote.totalCents);
       if (typeof transfer === "string") return transfer;
       const item = toFieldText(shortTitle(quote.title, 48));
       const action: Action = {
@@ -197,13 +201,14 @@ export function createPurchases(o: PurchasesOptions): Purchases {
         fields: [
           { label: "Item", value: item },
           { label: "Total", value: formatCents(quote.totalCents) },
-          { label: "ETH", value: transfer.eth },
+          { label: "USDC", value: transfer.usdc },
           { label: "To", value: treasury.address },
         ],
         meta: transfer.meta,
       };
-      db.insertPurchase({ action_id: action.id, account_id: owner.id, asin, title: quote.title, quote: JSON.stringify(quote), total_cents: quote.totalCents, wei: transfer.wei.toString(), treasury: treasury.address, buyer: owner.pubkey });
-      const prompt = `Please confirm on your Ledger: Buy on ${merchant.name}: ${item}, ${formatCents(quote.totalCents)} all in. That is ${transfer.eth} ETH to the AgentSign treasury ${treasury.address}; it ships to ${shipsTo}, and comes back to you if the order doesn't go through.`;
+      db.insertPurchase({ action_id: action.id, account_id: owner.id, asin, title: quote.title, quote: JSON.stringify(quote), total_cents: quote.totalCents, wei: transfer.units.toString(), asset: "USDC", treasury: treasury.address, buyer: owner.pubkey });
+      const back = treasury.canRefund ? ", and comes back to you if the order doesn't go through" : "";
+      const prompt = `Please confirm on your Ledger: Buy on ${merchant.name}: ${item}, ${formatCents(quote.totalCents)} all in. That is ${transfer.usdc} USDC to the AgentSign treasury ${treasury.address}; it ships to ${shipsTo}${back}.`;
       return { action, prompt };
     },
 
@@ -232,7 +237,7 @@ export function createPurchases(o: PurchasesOptions): Purchases {
       return db.purchases(accountId).map((p) => ({
         item: p.title,
         total: formatCents(p.total_cents),
-        paid: `${formatEth(BigInt(p.wei), 18)} ETH`,
+        paid: amount(p),
         status: p.status,
         ...(p.order_id ? { order: p.order_id } : {}),
         ...(p.fund_tx_hash ? { payment: txLink(p.fund_tx_hash) } : {}),
@@ -268,5 +273,5 @@ export function createPurchases(o: PurchasesOptions): Purchases {
 /** The line in the owner facts: what buying can do here. */
 export function purchasesFact(purchases: Purchases | undefined, owner: Account): string {
   if (!purchases) return "Amazon: not available on this server, so nothing can be bought.";
-  return `${purchases.store}: ${owner.tag} can buy things there through you, up to ${formatCents(purchases.limitCents)} per order all in, paid in ETH from their address to the treasury ${purchases.treasuryAddress}, shipped to ${purchases.shipsTo}. The ETH comes back if the order does not go through.`;
+  return `${purchases.store}: ${owner.tag} can buy things there through you, up to ${formatCents(purchases.limitCents)} per order all in, paid in USDC on Base from their address (plus a little ETH for the fee) to the treasury ${purchases.treasuryAddress}, shipped to ${purchases.shipsTo}.${purchases.refunds ? " The USDC comes back if the order does not go through." : ""}`;
 }
