@@ -1,0 +1,51 @@
+# AgentSign on Fly.io. Deploy with scripts/fly-deploy.sh (see "Deploy to Fly.io" in README.md).
+# Exactly one machine: it long-polls Telegram (one poller per bot token) and owns the SQLite volume.
+
+app = "agentsign-jarvis"
+primary_region = "sjc"
+kill_signal = "SIGTERM"
+kill_timeout = "10s"
+# A little swap so the startup esbuild bundle of the approval page never trips the OOM killer on 512 MB.
+swap_size_mb = 512
+
+[build]
+  dockerfile = "Dockerfile"
+
+# Secrets (fly secrets): XAI_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_BOT_USERNAME, MCP_TOKEN, ADMIN_TOKEN, PUBLIC_URL,
+# and optionally VOICE_WEBHOOK_SECRET, GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET (Google Calendar).
+[env]
+  CHANNEL = "telegram"
+  DEVICE_MODE = "eth"
+  # No USB on Fly: every Ledger signs through the approval page (PUBLIC_URL/sign/<token>) in Chrome.
+  DEVICES = ""
+  WEB_HOST = "0.0.0.0"
+  WEB_PORT = "7788"
+  DB_PATH = "/data/agentsign.db"
+  BASE_RPC_URL = "https://mainnet.base.org"
+  XAI_MODEL = "grok-4.3"
+  TZ = "America/Los_Angeles"
+
+[http_service]
+  internal_port = 7788
+  force_https = true
+  # Telegram long polling is outbound, so the proxy never sees that traffic: the machine must never stop.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+  # Keep it at one machine (fly scale count 1); two would fight over getUpdates and the volume.
+
+[checks]
+  [checks.web]
+    type = "tcp"
+    port = 7788
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "30s"
+
+[[mounts]]
+  source = "agentsign_data"
+  destination = "/data"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

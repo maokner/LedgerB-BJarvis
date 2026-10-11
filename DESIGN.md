@@ -1,25 +1,34 @@
-# AgentSign: an iMessage agent whose risky actions are clear-signed on a Ledger
+# AgentSign: a Telegram agent whose risky actions are clear-signed on a Ledger
 
 Hackathon build. Bare-bones on purpose: one Node process, one SQLite file, one small Ledger app, xAI (Grok) for the model.
 
 ## The demo
 
-1. Matt texts the agent's iMessage number for the first time. The agent does not know the number.
-   It asks for a tag. Matt replies `@matt`. The agent asks him to confirm **Create account** on his Ledger Nano S Plus.
-   The device shows `Create account / Tag @matt / Phone +1415...`. Matt approves. His account now exists, bound to that device's key.
+1. Matt opens the bot (Jarvis) on Telegram and presses Start. Jarvis introduces itself (`INTRO` in `src/agent/persona.ts`: an always-on assistant on its own computer, what it can do today, and that risky things wait on the Ledger), then offers his Telegram username as his tag: "You're @mokner on Telegram, so that's your tag here."
+   Matt says `go` with his Ledger plugged into the Mac (or `link` for a sign-up page on any computer). The device shows `Create account / Tag @mokner / Telegram @mokner`.
+   Matt approves. His account now exists: his Telegram user id, bound to that device's key.
 2. Matt texts `send $5 to @gabriel`. The agent proposes a payment and texts `Please confirm on your Ledger: Send money, To @gabriel, Amount $5.00`.
    The device shows exactly that. Matt approves. The signature is verified against his account key, the balance moves, Gabriel is texted.
 3. Matt texts a photo of a receipt: `pay gabe back for lunch`. Grok reads the total from the image; same approval flow.
-4. Matt texts `add @yadu as a friend`. **Friend request** is signed on Matt's Ledger. Yadu is texted. Yadu says `accept`, signs **Accept friend** on his own Ledger. Now the two agents may talk to each other.
-5. Matt texts `set up a 30 minute meeting with yadu tomorrow afternoon`. Matt's agent asks Yadu's agent, which checks Yadu's calendar and answers with free slots only.
-   Matt's agent proposes **Add to calendar** on Matt's Ledger. After Matt approves, Yadu is texted and asked to approve the same event on his Ledger. Both calendars get the event.
+4. Matt texts `add @yadu as a friend`. **Friend request** is signed on Matt's Ledger. Yadu is texted. Yadu says `accept`, signs **Accept friend** on his own Ledger. Now the two agents may talk to each other, and Matt can text `send yadu a thank you note`: Yadu's Jarvis texts him `@mokner says: ...` at once.
+5. Matt texts `set up a 30 minute meeting with yadu tomorrow afternoon`. Matt's agent reads both calendars (Yadu's as free/busy only, never titles), picks the first afternoon slot free for both, and Yadu's Jarvis texts him: `@mokner would like to meet: 'Meeting' Mon Oct 12 14:00-14:30. Any time Mon Oct 12 12:00-17:00 works for Matt. Reply 'yes' and it goes on both calendars, or name another time.`
+   Yadu says `yes` (or `3pm works better`, which books at once because it is inside Matt's window; a time outside it goes back to Matt to approve). Both calendars get the event, Google included. No Ledger on either side: a meeting between friends moves no money, so the people's own words are the approval.
 
-Nothing risky happens without a signature from the owner's device. The agent has no tool that can move money, write a calendar, or add a friend. It can only *propose*.
+Nothing risky happens without a signature from the owner's device. The agent has no tool that can move money, write the owner's own calendar, or add a friend. It can only *propose*. Meetings with friends are the one deliberate exception: they are not risky, so they are confirmed by text, not on a Ledger.
+
+## Identity
+
+An account is a Telegram user plus a Ledger.
+The channel names the sender by a handle, `tg:<telegram user id>`, which never changes; the account stores it, the Ledger's key or address, the tag, and the latest Telegram `username` and `display_name` (refreshed on every message).
+The tag defaults to `@<username>` (lowercased) when that is a valid, free tag; otherwise Jarvis asks for one.
+Anywhere a person is named (`To @tag`, `With @tag`), a Telegram @username of someone with an account works too.
+A bot cannot message someone first, so friends must open the bot and press Start before anything can reach them.
+The dev and iMessage channels still work with phone-number or email handles (dev is what the tests and the REPL use).
 
 ## Architecture
 
 ```
-iMessage (Photon)  ──┐                            ┌── Ledger Nano S Plus (USB HID)
+Telegram (Bot API) ──┐                            ┌── Ledger Nano S Plus (USB HID)
                      ├─ Channel ─► App ─► DeviceManager ─┤
 dev HTTP/REPL ───────┘            │                      └── Speculos emulator (TCP), for development
                                   │
@@ -43,8 +52,9 @@ Source layout (TypeScript, ESM, Node 22+, `tsx` to run, `vitest` to test, `bette
 | `src/agent/` | app agent | xAI client, tools, the per-account agent loop, peer turns |
 | `src/approvals.ts`, `src/executors.ts` | app agent | propose, sign, verify, execute, notify |
 | `src/app.ts` | app agent | `createApp()`: routing, onboarding, friend requests, everything behind `App.handleInbound` |
+| `src/calendar/` | app agent | the owners' calendars: AgentSign's table plus Google Calendar (OAuth link, merged reads, mirroring approved events) |
 | `src/index.ts` | app agent | entry: env, DB, device manager, channel, app |
-| `src/channels/imessage.ts`, `src/channels/dev.ts` | channel agent | Photon channel; local HTTP + REPL channel |
+| `src/channels/` | channel agent | Telegram bot channel; local HTTP + REPL channel; the older iMessage (Photon) channel |
 | `README.md` | channel agent | how to run the whole thing, permissions, demo script |
 
 ## Actions and clear signing
@@ -57,17 +67,18 @@ An `Action` is a short code plus 1..6 label/value pairs (see `src/types.ts`). `s
 
 The device parses these bytes itself, shows the title for the code and every field, and after the person presses both buttons on **Approve** it signs `sha256(bytes)` with Ed25519 (SLIP-0010 path `m/44'/8008'/0'/0'/0'`). The server verifies with `verifyActionSignature()` against the pubkey stored on the account. Unknown codes are refused by the device. The action id makes every signature single-use: the server only accepts a signature for the action it is currently waiting on.
 
-Codes: `PAY` Send money, `CAL` Add to calendar, `FRQ` Friend request, `FAC` Accept friend, `ACC` Create account.
+Codes: `PAY` Send money, `CAL` Add to calendar, `FRQ` Friend request, `FAC` Accept friend, `ACC` Create account, `DEL` Delete account (Ethereum mode only: the custom app refuses codes it does not know, so the engine does not offer it there).
 
 Field conventions (the server builds them, the device just shows them):
 
 | Code | Fields |
 |---|---|
-| ACC | `Tag @matt`, `Phone +14155551234` |
+| ACC | `Tag @mokner`, `Telegram @mokner` (`Telegram id 123456` without a username; dev and iMessage: `Phone <handle>`) |
 | PAY | `To @gabriel`, `Amount $5.00`, optional `Memo lunch` |
 | CAL | `Title Lunch with Gabe`, `When Sat Oct 11 12:00-13:00`, optional `With @gabriel` |
 | FRQ | `To @yadu` |
 | FAC | `From @matt` |
+| DEL | `Tag @matt`, `Address 0x...` (the full lowercase address) |
 
 ## Device manager
 
@@ -77,28 +88,70 @@ For account creation the app lists devices, removes the pubkeys already bound to
 
 Devices come from `DEVICES` in the environment: `speculos:<host>:<port>` entries and `hid` for USB.
 
+## Two device modes
+
+`DEVICE_MODE=eth` (default, the real thing): the Ledger's own Ethereum app.
+An account is the device's address at m/44'/60'/0'/0/0, verified on screen at signup.
+`PAY` is a real EIP-1559 ETH transfer on Base mainnet that the Ethereum app clear-signs (amount, address, fees); the server broadcasts the signed transaction and stores the hash.
+`CAL`, `FRQ`, `FAC`, `DEL` are personal messages (`actionMessage()` in `src/actions.ts`) shown in full on the device and verified with ecrecover.
+`DEVICE_MODE=agentsign` (offline demo): the custom Nano S Plus app in `device-app/`, demo dollars, Speculos.
+
+The Ledger does not have to be on the server's Mac: every confirmation text carries a link to `/sign/<token>` (`src/web/`), a page that talks to the Ledger over WebHID from any Chrome, shows the action, has it signed, and posts the result back.
+USB on the server Mac and the page race; the first side to engage wins (the page loaded the request, or the device shows it over USB) and the other is cancelled, so the server never polls its USB while a browser works the same Ledger. Both go through the same verification (`src/device/eth-verify.ts`).
+
 ## The agent and its harness
 
-One agent per account (system prompt with the owner's tag, the date, their balance, friends, and notes). Conversation history is persisted per account and the last ~30 turns are sent to the model. Model: xAI chat completions with tool calling (`XAI_MODEL`, default a fast non-reasoning Grok); images (receipts) go in as base64 data URLs.
+Two model layers per account (`src/agent/`), in the spirit of Poke:
 
-Safe tools (execute directly): `get_balance`, `list_friends`, `get_calendar(from,to)`, `get_notes`, `remember(note)`, `list_transactions`, `message_agent(tag, text)`.
+- the **persona**, Jarvis, talks to the owner: a clever friend over text (the Poke persona, minus anything that is Poke's), concise, witty when it fits, mirroring the owner's casing and tone, plain text, no emoji. Its only tool is `delegate(goal, context)`, which it never mentions. It knows the owner's tag, address and balance, greets and offers three things to try on the first turn after sign-up, answers setup and "what can you do" questions without delegating, and adds one in-the-moment offer in roughly one reply out of five.
+- the **engine** never talks to the owner. It runs the tools and reports plain facts back to the persona, never inventing anything.
 
-Risky tools do not exist. There is one `propose_action(code, fields)` tool. The app turns it into a pending approval: it texts the owner what will be shown on the device, calls `deviceManager.sign`, verifies, executes through `src/executors.ts`, logs the action with its signature, and texts the outcome. The model is told the outcome on its next turn (as a system note in history) so it can answer "did it go through?".
+Safe tools (engine, execute directly): `get_balance`, `list_friends`, `get_calendar`, `get_notes`, `remember`, `list_transactions`, `send_note`, `message_agent`, `propose_meeting`, `answer_meeting`, `connect_google_calendar`, `disconnect_google_calendar`.
 
-`message_agent` runs a *peer turn* on the other account's agent: a separate system prompt ("you are @yadu's agent talking to @matt's agent"), the persisted peer thread, and only `get_free_busy(from,to)` (busy intervals, no titles) plus `get_notes_shareable`... keep it to free/busy. Non-friends get a refusal string instead of a peer turn. Each owner is texted a one-line note the first time their agent talks to a peer in a thread.
+Google Calendar (`src/calendar/google.ts`) is a per-owner mirror, not a second source of truth.
+An owner connects it through a one-time link (`/google/connect/<token>`, the OAuth state) that lands on `/google/callback`; the refresh token is stored on the account.
+Reads merge Google's events with AgentSign's own table (rows already mirrored come back from Google; the rest are listed from the table), and fall back to the table with a warning when Google is unreachable.
+Friends' agents get busy intervals only; all-day, "free" and declined Google events do not count.
+Google is only ever written with rows AgentSign's own table already holds (a `CAL` the owner approved, or a meeting both friends said yes to): `afterEvent` pushes the row with an id derived from it (`agentsign<salt><row id>`), so a retry hits 409 instead of duplicating.
+
+Risky tools do not exist. There is one `propose_action(code, fields)` tool. The app turns it into a pending approval, appends "Please confirm on your Ledger: ..." plus the approval link to the persona's reply (one text), calls `deviceManager.sign`, verifies, executes through `src/executors.ts`, logs the action with its signature or transaction hash, and texts the outcome. The outcome is stored in the history so the next turn can answer "did it go through?".
+
+A stranger (no account) with a usable username gets a fixed welcome offering `@<username>` as the tag; `go` (or any plain yes) runs onboarding with it and `link` sends the sign-up page, both without a model call.
+Anything else goes to a restricted Jarvis whose only tools are `choose_tag` and `send_link`, and every reply steers back to setup.
+Onboarding then runs deterministically: exactly one unbound Ledger on the Mac's USB, else (Ethereum mode) the sign-up page, and `ACC` is the address verification on the device.
+
+`message_agent` runs a *peer turn* on the other account's engine with only `get_free_busy`, for questions like "when is yadu free". Non-friends get a refusal string without a model call.
+
+Meetings between friends (`src/meetings.ts`) skip the Ledger on purpose: nothing about them is risky, and a Ledger prompt on each side made the demo feel like paperwork.
+`propose_meeting(tag, title, from, to, duration_minutes, preferred)` takes the window the owner is open to ("around 9" is 08:30-10:00 with `preferred` 09:00; "any time 9 to 5" is 09:00-17:00), reads both calendars' free/busy, and offers the slot nearest the preferred time (else the earliest) that is free for both.
+One `meetings` row holds the slot on the table, the asker's window, who offered the slot and whose answer it waits for; one open meeting per pair, a new proposal replaces the old one.
+The friend gets one text and answers in their own words: a plain `yes` or `no` is a deterministic shortcut in `src/app.ts` (no model call); anything else goes through Jarvis to `answer_meeting(tag, yes | no | another time, when)`.
+Yes books it: an event on each side's calendar (`with_tag` naming the other) in one transaction, then the Google mirror for each, then one text to each side.
+A counter inside the asker's window books at once (the asker already said any time there works); a counter outside goes back to the asker, who answers the same way.
+Busy times are checked again right before booking, so a slot that filled up in between is refused instead of double-booked.
+The agents' exchange is written to the peer thread (free/busy only), and every step is a system note in both histories so "did yadu answer?" is answered from memory.
+
+`send_note(tag, text)` is how friends talk to each other through their agents: "send gabe a thank you note" becomes a text from the friend's own Jarvis, `@matt says: Thanks for lunch!`, delivered at once (a note moves no money and touches no calendar, so there is nothing to sign).
+The note is also stored as a system note in the recipient's chat history, so their next turn can quote it or answer it with a note back.
+Only accepted friends can be reached; the engine composes the note in the owner's words from what they asked.
 
 ## Executors (run only after a verified signature)
 
-- `ACC`: create account (tag, pubkey, handle), balance starts at $250.00 demo money.
+- `ACC`: create account (tag, pubkey, the handle the sign-up came from), balance starts at $250.00 demo money; the app then stores the Telegram username and display name on it.
 - `PAY`: debit sender, credit recipient (recipient must exist), log a transaction, text the recipient.
-- `CAL`: insert the event for the owner. If `With @tag` names an accepted friend, create a `CAL` approval for that friend too (same title and time, `With` = the proposer) and text them; their calendar gets the event only after their own signature.
+- `CAL`: the owner's own event (no `With`; meetings with friends never come here): insert it, then mirror it to their Google Calendar when one is connected (a Google failure is a line in the text, not a failed action).
 - `FRQ`: friendship row `pending`, text the target's handles.
 - `FAC`: friendship `accepted`, text both.
+- `DEL`: in one transaction remove the account, its handles, friendships, meetings, notes, events, chat history and peer threads; the actions log and transactions stay, detached from it (demo balances are forfeited). The person is a stranger again and can sign up anew.
 
 ## Channels
 
-`Channel.start(onMessage)` delivers direct messages; `Channel.send(handle, text)` sends. The iMessage channel is Photon's `@photon-ai/imessage-kit` (reads `~/Library/Messages/chat.db`, sends through Messages.app). It needs Full Disk Access and Automation for the terminal that runs it; only Matt can grant those, and nothing in tests may touch Messages.app or chat.db. The dev channel is an HTTP server (`POST /dev/message`, `GET /dev/outbox`) plus a REPL so the whole flow can be exercised with Speculos and no phone.
+`Channel.start(onMessage)` delivers direct messages (on Telegram with the sender's `username` and `name`); `Channel.send(handle, text)` sends.
+The Telegram channel is a bot that long-polls the Bot API (`TELEGRAM_BOT_TOKEN`); `TELEGRAM_BOT_USERNAME` is how Jarvis tells people to find it.
+The older iMessage channel is Photon's `@photon-ai/imessage-kit` (reads `~/Library/Messages/chat.db`, sends through Messages.app).
+It needs Full Disk Access and Automation for the terminal that runs it; only Matt can grant those, and nothing in tests may touch Messages.app or chat.db.
+The dev channel is an HTTP server (`POST /dev/message`, `GET /dev/outbox`) plus a REPL so the whole flow can be exercised with Speculos and no phone.
 
 ## Non-goals
 
-No web UI, no real money, no Google Calendar, no multi-process agent federation, no Flex/Stax UI. Keep every file short and obvious.
+No two-way Google Calendar sync (Google events are read and AgentSign events are mirrored there; edits made on Google are not pulled back into the table), no multi-process agent federation, no Flex/Stax UI, no tokens other than ETH yet. Keep every file short and obvious.

@@ -1,0 +1,22 @@
+[package]
+name = "agentsign"
+version = "0.1.0"
+authors = ["AgentSign"]
+edition = "2021"
+
+[dependencies]
+ledger_device_sdk = "1.41.0"
+
+[package.metadata.ledger]
+curve = ["ed25519"]
+flags = "0"
+path = ["44'/8008'"]
+name = "AgentSign"
+nanosplus = { icon = "icons/agentsign_14x14.gif" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("apex_p", "stax", "flex", "nanos", "nanox", "nanosplus"))'] }

@@ -18,7 +18,8 @@ export type ActionCode =
   | "CAL" // add an event to the owner's calendar
   | "FRQ" // send a friend request (lets the two agents talk)
   | "FAC" // accept a friend request
-  | "ACC"; // create an account (bind this Ledger to a tag and a phone)
+  | "ACC" // create an account (bind this Ledger to a tag and a phone)
+  | "DEL"; // delete the owner's account (Ethereum app only; the custom app refuses it)
 
 export const ACTION_TITLES: Record<ActionCode, string> = {
   PAY: "Send money",
@@ -26,6 +27,7 @@ export const ACTION_TITLES: Record<ActionCode, string> = {
   FRQ: "Friend request",
   FAC: "Accept friend",
   ACC: "Create account",
+  DEL: "Delete account",
 };
 
 export interface ActionField {
@@ -42,6 +44,19 @@ export interface Action {
   id: string;
   /** 1..6 fields, shown in order. */
   fields: ActionField[];
+  /** Ethereum mode only, PAY only: the transaction to sign. Not shown as fields and not part of encodeAction(). */
+  meta?: EthTxMeta;
+}
+
+/** An EIP-1559 ETH transfer, filled by the server before it asks the Ethereum app to sign. Big numbers are decimal strings. */
+export interface EthTxMeta {
+  to: string;
+  valueWei: string;
+  chainId: number;
+  nonce: number;
+  gasLimit: string;
+  maxFeePerGas: string;
+  maxPriorityFeePerGas: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -58,16 +73,31 @@ export interface DeviceInfo {
   label: string;
 }
 
+/** As the pubkey for sign(): any device that `SignOptions.accept` allows (Ethereum-mode sign-up from an unknown Ledger). */
+export const ANY_DEVICE = "";
+
 export type SignResult =
-  | { status: "approved"; signature: string /* 128 hex chars, Ed25519 over sha256(encodeAction(action)) */ }
+  /** `pubkey`: the device that signed; always set when sign() was called with ANY_DEVICE. */
+  | { status: "approved"; signature: string /* 128 hex chars, Ed25519 over sha256(encodeAction(action)) */; pubkey?: string }
   | { status: "rejected" } // the person pressed Reject on the device
-  | { status: "no_device" } // no connected device with that pubkey appeared before the timeout
-  | { status: "timeout" } // the device showed the request but nobody answered in time
+  | { status: "no_device"; expiredLink?: true } // no connected device with that pubkey appeared before the timeout
+  | { status: "timeout"; expiredLink?: true } // the device showed the request but nobody answered in time
+  // expiredLink: the answer came from an approval-page link that expired (nobody opened it, or the page never answered)
   | { status: "error"; message: string };
 
 export interface SignOptions {
   /** Total time to wait for the device to appear and the person to answer. Default 120 s. */
   timeoutMs?: number;
+  /** Stops waiting: sign() resolves with "no_device" soon after, and a device that was not asked yet is not asked. */
+  signal?: AbortSignal;
+  /** With ANY_DEVICE: which device keys may answer (for example, not already bound to an account). */
+  accept?: (pubkey: string) => boolean;
+  /**
+   * Call once the person is answering through this manager: the request is on a USB device, or the approval page
+   * loaded it. Combined managers then stop the others, so the server's USB polling never fights a browser over
+   * the same Ledger (on macOS, node-hid seizes the device and the browser stops receiving the Ledger's replies).
+   */
+  claim?: () => void;
 }
 
 /**
@@ -82,6 +112,11 @@ export interface DeviceManager {
    * not connected yet, polls for it until the timeout. Never throws; failures come back as a status.
    */
   sign(pubkey: string, action: Action, options?: SignOptions): Promise<SignResult>;
+  /**
+   * Optional, called before the owner is texted: lets a manager get ready for `action` (the remote manager
+   * registers a signing job) and returns a link the owner can open to sign it elsewhere.
+   */
+  prepare?(pubkey: string, action: Action): Promise<{ url?: string; expiresAt?: number }>;
   close(): Promise<void>;
 }
 
@@ -89,7 +124,7 @@ export interface DeviceManager {
 // Channels
 // ---------------------------------------------------------------------------
 
-export type ChannelService = "iMessage" | "SMS" | "RCS" | "dev";
+export type ChannelService = "iMessage" | "SMS" | "RCS" | "telegram" | "dev";
 
 export interface InboundMessage {
   /** Unique per message (chat.db GUID on iMessage). The app ignores an id it has seen. */
@@ -102,6 +137,10 @@ export interface InboundMessage {
   images: string[];
   at: Date;
   service: ChannelService;
+  /** The sender's public username without "@" when the channel has one (Telegram). Default tag at signup. */
+  username?: string;
+  /** The sender's display name when the channel has one. */
+  name?: string;
 }
 
 /** Text in and out. One instance per process. */
@@ -111,6 +150,10 @@ export interface Channel {
   start(onMessage: (message: InboundMessage) => Promise<void>): Promise<void>;
   /** Send one text to one handle. Resolves when the transport accepted it. */
   send(handle: string, text: string): Promise<void>;
+  /** Optional: show or hide the typing indicator in the chat with `handle`. Best effort, never throws. */
+  typing?(handle: string, on: boolean): Promise<void>;
+  /** Optional: react to an inbound message (InboundMessage.id) with an emoji, like a tapback. Best effort, never throws. */
+  react?(messageId: string, emoji: string): Promise<void>;
   stop(): Promise<void>;
 }
 

@@ -66,3 +66,9 @@ describe("handles and tags", () => {
     expect(parseTag("hello there")).toBeUndefined();
   });
 });
+
+describe("telegram handles", () => {
+  it("keeps tg ids as they are", () => {
+    expect(normalizeHandle(" TG:123456 ")).toBe("tg:123456");
+  });
+});

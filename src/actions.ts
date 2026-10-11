@@ -14,7 +14,7 @@
  * Maximum payload: 24 + 6 * (1 + 16 + 1 + 64) = 516 bytes.
  */
 import { createHash, createPublicKey, randomBytes, verify as cryptoVerify } from "node:crypto";
-import type { Action, ActionCode, ActionField } from "./types.js";
+import { ACTION_TITLES, type Action, type ActionCode, type ActionField } from "./types.js";
 
 export const ACTION_MAGIC = Buffer.from("AGS1", "ascii");
 export const MAX_FIELDS = 6;
@@ -22,7 +22,7 @@ export const MAX_LABEL_BYTES = 16;
 export const MAX_VALUE_BYTES = 64;
 export const MAX_ACTION_BYTES = 24 + MAX_FIELDS * (1 + MAX_LABEL_BYTES + 1 + MAX_VALUE_BYTES);
 
-const CODES: readonly ActionCode[] = ["PAY", "CAL", "FRQ", "FAC", "ACC"];
+const CODES: readonly ActionCode[] = ["PAY", "CAL", "FRQ", "FAC", "ACC", "DEL"];
 const PRINTABLE_ASCII = /^[\x20-\x7E]+$/;
 
 export class ActionFormatError extends Error {}
@@ -130,4 +130,12 @@ export function verifyActionSignature(pubkeyHex: string, action: Action, signatu
 /** One line for a text message: "Send money: To @gabriel, Amount $5.00". */
 export function describeAction(action: Action, titles: Record<ActionCode, string>): string {
   return `${titles[action.code]}: ${action.fields.map((f) => `${f.label} ${f.value}`).join(", ")}`;
+}
+
+/**
+ * The text the official Ethereum app signs as a personal message (CAL, FRQ, FAC in Ethereum mode):
+ * "AgentSign\nAdd to calendar\nTitle: Lunch\n...\nid: 0011aabb".
+ */
+export function actionMessage(action: Action): string {
+  return ["AgentSign", ACTION_TITLES[action.code], ...action.fields.map((f) => `${f.label}: ${f.value}`), `id: ${action.id.slice(0, 8)}`].join("\n");
 }

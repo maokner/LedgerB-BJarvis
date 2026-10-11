@@ -4,6 +4,8 @@
  */
 export function normalizeHandle(raw: string): string {
   const trimmed = raw.trim();
+  // Telegram users are "tg:<numeric user id>"; the id is stable even when the @username changes.
+  if (/^tg:\d+$/i.test(trimmed)) return trimmed.toLowerCase();
   if (trimmed.includes("@")) return trimmed.toLowerCase();
   const digits = trimmed.replace(/[^\d+]/g, "");
   if (digits.startsWith("+")) return `+${digits.slice(1).replace(/\D/g, "")}`;
@@ -15,6 +17,7 @@ export function normalizeHandle(raw: string): string {
 
 /** "+14155551234" -> "+1 (415) ***-1234" for notes to other people. */
 export function maskHandle(handle: string): string {
+  if (handle.startsWith("tg:")) return `tg:***${handle.slice(-3)}`;
   if (handle.includes("@")) {
     const [user = "", domain = ""] = handle.split("@");
     return `${user.slice(0, 2)}***@${domain}`;

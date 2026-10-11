@@ -1,0 +1,13 @@
+#!/bin/sh
+# Linux stand-in for the two macOS `sips` calls in src/agent/xai.ts (imageDataUrl), backed by ImageMagick:
+#   sips -s format jpeg <in> --out <out>   convert any image (HEIC, WebP, GIF, ...) to JPEG
+#   sips -Z <max> <file>                   shrink in place so the longest side is at most <max> pixels
+set -eu
+if [ "$#" -eq 6 ] && [ "$1" = -s ] && [ "$2" = format ] && [ "$3" = jpeg ] && [ "$5" = --out ]; then
+  exec convert "$4[0]" -auto-orient -strip "jpeg:$6"
+fi
+if [ "$#" -eq 3 ] && [ "$1" = -Z ]; then
+  exec mogrify -resize "$2x$2>" "$3"
+fi
+echo "sips: unsupported arguments: $*" >&2
+exit 64
