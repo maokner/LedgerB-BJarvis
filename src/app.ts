@@ -9,6 +9,7 @@ import type { Account, Db } from "./db.js";
 import { demoMoney, type Money } from "./money.js";
 import { normalizeHandle, parseTag } from "./handles.js";
 import { answerMeeting } from "./meetings.js";
+import { executeDirectly, requiresLedger } from "./policy.js";
 import { ACTION_TITLES, type Action, type ActionField, ANY_DEVICE, type App, type Channel, type DeviceManager, type InboundMessage } from "./types.js";
 
 /** Said to someone new without a usable Telegram username when the model cannot be reached. */
@@ -269,6 +270,14 @@ export function createApp(options: AppOptions): App & AppVoiceHooks & { approval
     if (!from) return false;
     db.addMessage(account.id, "user", { role: "user", content: message.text });
     const action: Action = { code: "FAC", id: newActionId(), fields: [{ label: "From", value: from.tag }] };
+    if (!requiresLedger(account, "friends")) {
+      await channel.react(message.id, "👍");
+      const r = await executeDirectly({ db, calendar, channel, log }, account, action);
+      const reply = r.line.replace(/^Error: /, "");
+      await channel.send(handle, reply);
+      db.addMessage(account.id, "assistant", { role: "assistant", content: reply });
+      return true;
+    }
     try {
       await approvals.request(account.id, action, { reason: "accept shortcut" });
     } catch (err) {
@@ -295,10 +304,11 @@ export function createApp(options: AppOptions): App & AppVoiceHooks & { approval
     if (last?.role !== "system" || !JSON.stringify(last.content).includes("Reply 'yes'")) return false;
     db.addMessage(account.id, "user", { role: "user", content: message.text });
     await channel.react(message.id, yes ? "👍" : "👌");
-    const result = await answerMeeting({ db, calendar, channel, log }, account, waiting[0]!, yes ? { kind: "yes" } : { kind: "no" });
-    const reply = result.ok ? result.reply : `${result.reply.replace(/^Error: /, "")}`;
-    await channel.send(handle, reply);
-    db.addMessage(account.id, "assistant", { role: "assistant", content: reply });
+    const result = await answerMeeting({ db, calendar, channel, log, approvals }, account, waiting[0]!, yes ? { kind: "yes" } : { kind: "no" });
+    const reply = result.ok ? result.reply : result.reply.replace(/^Error: /, "");
+    // An empty reply: their own Ledger prompt is their text (their policy sends meetings there).
+    if (reply) await channel.send(handle, reply);
+    db.addMessage(account.id, "assistant", { role: "assistant", content: reply || "Their side of the meeting now waits on their Ledger." });
     return true;
   }
 

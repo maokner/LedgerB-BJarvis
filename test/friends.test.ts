@@ -27,7 +27,7 @@ describe("friends and agent-to-agent talk", () => {
     expect(h.devices[0]!.shown.at(-1)).toMatchObject({ code: "FRQ", fields: [{ label: "To", value: "@yadu" }] });
     expect(h.db.friendship(matt.id, yadu.id)).toEqual({ status: "pending", requested_by: matt.id });
     expect(h.to(PHONES.yadu).at(-1)).toBe(
-      "@matt wants to connect your agents (so they can schedule with each other and pass notes between you). Reply 'accept @matt' to approve it on your Ledger.",
+      "@matt wants to connect your agents (so they can schedule with each other and pass notes between you). Reply 'accept @matt' to connect.",
     );
 
     // "accept" skips the model and is signed on Yadu's device.

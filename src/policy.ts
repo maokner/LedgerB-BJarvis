@@ -90,7 +90,13 @@ export async function executeDirectly(deps: DirectDeps, owner: Account, action: 
   const { db } = deps;
   let outcome;
   try {
-    outcome = db.tx(() => execute(db, { accountId: owner.id, pubkey: owner.pubkey }, action));
+    // The actions log keeps it too, executed with no signature: the policy, not the Ledger, let it through.
+    outcome = db.tx(() => {
+      db.insertAction(owner.id, action);
+      const result = execute(db, { accountId: owner.id, pubkey: owner.pubkey }, action);
+      db.setActionStatus(action.id, "executed");
+      return result;
+    });
   } catch (err) {
     if (err instanceof ExecutorError) return { ok: false, line: `Error: ${err.message}` };
     throw err;

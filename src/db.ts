@@ -41,6 +41,8 @@ export interface CalendarEvent {
   starts_at: string;
   ends_at: string;
   with_tag: string | null;
+  /** The action that added it (signed on the Ledger, or executed at once under the owner's policy); null for a meeting both friends said yes to. */
+  action_id: string | null;
   /** The event's id on the owner's Google Calendar once mirrored there; null until then (or never, without a connection). */
   google_event_id: string | null;
 }

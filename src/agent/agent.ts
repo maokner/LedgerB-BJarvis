@@ -6,6 +6,7 @@ import type { Money } from "../money.js";
 import type { Account, Db } from "../db.js";
 import { formatDay, localNow, TIMEZONE } from "../format.js";
 import { meetingFacts } from "../meetings.js";
+import { describePolicy, policyOf } from "../policy.js";
 import { ACTION_TITLES, type Action, type Channel } from "../types.js";
 import { firstName, withUsername } from "./bot.js";
 import { freeBusy, PEER_TOOL_SPECS, type Tools } from "./tools.js";
@@ -69,6 +70,7 @@ export function ownerFacts(db: Db, owner: Account, balance: string, calendar?: C
     `People on AgentSign: ${others.join(", ") || "nobody else yet"}.`,
     `Waiting on ${owner.tag}'s Ledger: ${pending ? describeAction({ code: pending.code as Action["code"], id: pending.id, fields: pending.fields }, ACTION_TITLES) : "nothing"}.`,
     ...meetingFacts(db, owner),
+    `Ledger policy, ${describePolicy(policyOf(owner))} ${owner.tag} can change it by asking (set_ledger_policy): a preset (relaxed, standard, strict) or one thing at a time.`,
     googleLine,
     notes.length ? `Notes saved about ${owner.tag}:\n${notes.join("\n")}` : "",
   ].filter(Boolean);

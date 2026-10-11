@@ -14,7 +14,8 @@ Hackathon build. Bare-bones on purpose: one Node process, one SQLite file, one s
 5. Matt texts `set up a 30 minute meeting with yadu tomorrow afternoon`. Matt's agent reads both calendars (Yadu's as free/busy only, never titles), picks the first afternoon slot free for both, and Yadu's Jarvis texts him: `@mokner would like to meet: 'Meeting' Mon Oct 12 14:00-14:30. Any time Mon Oct 12 12:00-17:00 works for Matt. Reply 'yes' and it goes on both calendars, or name another time.`
    Yadu says `yes` (or `3pm works better`, which books at once because it is inside Matt's window; a time outside it goes back to Matt to approve). Both calendars get the event, Google included. No Ledger on either side: a meeting between friends moves no money, so the people's own words are the approval.
 
-Nothing risky happens without a signature from the owner's device. The agent has no tool that can move money, write the owner's own calendar, or add a friend. It can only *propose*. Meetings with friends are the one deliberate exception: they are not risky, so they are confirmed by text, not on a Ledger.
+Money and deleting the account never happen without a signature from the owner's device: the agent can only *propose* those.
+Everything else is the owner's call. A per-owner **Ledger policy** (`src/policy.ts`) says whether their own calendar events, meetings with friends and friend changes go to the Ledger or just happen. Presets: `relaxed` (nothing else), `standard` (the default: adding friends), `strict` (all three), and any one of the three can be flipped by asking Jarvis ("ask my Ledger for calendar events too"). Changes take effect at once.
 
 ## Identity
 
@@ -106,7 +107,12 @@ Two model layers per account (`src/agent/`), in the spirit of Poke:
 - the **persona**, Jarvis, talks to the owner: a clever friend over text (the Poke persona, minus anything that is Poke's), concise, witty when it fits, mirroring the owner's casing and tone, plain text, no emoji. Its only tool is `delegate(goal, context)`, which it never mentions. It knows the owner's tag, address and balance, greets and offers three things to try on the first turn after sign-up, answers setup and "what can you do" questions without delegating, and adds one in-the-moment offer in roughly one reply out of five.
 - the **engine** never talks to the owner. It runs the tools and reports plain facts back to the persona, never inventing anything.
 
-Safe tools (engine, execute directly): `get_balance`, `list_friends`, `get_calendar`, `get_notes`, `remember`, `list_transactions`, `send_note`, `message_agent`, `propose_meeting`, `answer_meeting`, `connect_google_calendar`, `disconnect_google_calendar`.
+Safe tools (engine, execute directly): `get_balance`, `list_friends`, `get_calendar`, `get_notes`, `remember`, `list_transactions`, `send_note`, `message_agent`, `propose_meeting`, `answer_meeting`, `set_ledger_policy`, `connect_google_calendar`, `disconnect_google_calendar`.
+
+The Ledger policy lives on the account (`accounts.policy`, JSON: a preset plus per-guard overrides) and is read by `propose_action`, by `src/meetings.ts` when a meeting is booked, and by the `accept` shortcut.
+When the policy does not gate an action, `executeDirectly` runs the very same executor the Ledger path would run, in a transaction, at once; the engine's result says "Done at once", the persona tells the owner, and the task ends on that line (like a proposal does) so the model cannot embellish it.
+When it does gate one, nothing changes from the original design: the action waits on the device.
+A side whose policy gates meetings gets their half of a booked meeting as a `CAL` on their Ledger (with `With @friend`) at booking time; the other side's calendar is written at once and they are told the friend still has to confirm.
 
 Google Calendar (`src/calendar/google.ts`) is a per-owner mirror, not a second source of truth.
 An owner connects it through a one-time link (`/google/connect/<token>`, the OAuth state) that lands on `/google/callback`; the refresh token is stored on the account.
@@ -114,7 +120,7 @@ Reads merge Google's events with AgentSign's own table (rows already mirrored co
 Friends' agents get busy intervals only; all-day, "free" and declined Google events do not count.
 Google is only ever written with rows AgentSign's own table already holds (a `CAL` the owner approved, or a meeting both friends said yes to): `afterEvent` pushes the row with an id derived from it (`agentsign<salt><row id>`), so a retry hits 409 instead of duplicating.
 
-Risky tools do not exist. There is one `propose_action(code, fields)` tool. The app turns it into a pending approval, appends "Please confirm on your Ledger: ..." plus the approval link to the persona's reply (one text), calls `deviceManager.sign`, verifies, executes through `src/executors.ts`, logs the action with its signature or transaction hash, and texts the outcome. The outcome is stored in the history so the next turn can answer "did it go through?".
+There is one `propose_action(code, fields)` tool for everything the Ledger may gate. The app turns it into a pending approval, appends "Please confirm on your Ledger: ..." plus the approval link to the persona's reply (one text), calls `deviceManager.sign`, verifies, executes through `src/executors.ts`, logs the action with its signature or transaction hash, and texts the outcome. The outcome is stored in the history so the next turn can answer "did it go through?".
 
 A stranger (no account) with a usable username gets a fixed welcome offering `@<username>` as the tag; `go` (or any plain yes) runs onboarding with it and `link` sends the sign-up page, both without a model call.
 Anything else goes to a restricted Jarvis whose only tools are `choose_tag` and `send_link`, and every reply steers back to setup.

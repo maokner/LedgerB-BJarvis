@@ -114,6 +114,9 @@ async function consent(get: (path: string) => Promise<Response>, link: string, c
   return get(`/google/callback?${new URLSearchParams(code ? { state, code } : { state, error: "access_denied" })}`);
 }
 
+/** The engine's report as the persona saw it on its last call: a CAL the policy does not gate is done at once, so the owner reads the persona's words, not a Ledger outcome text. */
+const report = (s: { requests: { messages: { content: unknown }[] }[] }) => String(s.requests.at(-1)!.messages.at(-1)!.content);
+
 describe("google calendar", () => {
   it("'connect my google calendar' sends a link without a model call, and the callback stores the connection and texts the owner", async () => {
     const s = await setup();
@@ -264,7 +267,7 @@ describe("google calendar", () => {
       say("Dentist tomorrow at 9 is ready."),
     );
     await s.send(PHONES.matt, "put the dentist on my calendar tomorrow 9 to 10");
-    expect(s.to(PHONES.matt)).toContain("Added 'Dentist' Sun Oct 11 09:00-10:00 to your calendar. It's on your Google Calendar too.");
+    expect(report(s)).toContain("Added 'Dentist' Sun Oct 11 09:00-10:00 to your calendar. It's on your Google Calendar too. Done at once:");
     const [event] = s.google.state.events;
     expect(event).toMatchObject({ summary: "Dentist", start: { dateTime: "2026-10-11T09:00:00", timeZone: "America/Los_Angeles" }, end: { dateTime: "2026-10-11T10:00:00", timeZone: "America/Los_Angeles" } });
     expect(event!.id).toMatch(/^agentsign[0-9a-v]{8}\d+$/);
@@ -285,12 +288,12 @@ describe("google calendar", () => {
     s.google.state.insertFails = true;
     s.script(delegate("lunch"), call("propose_action", { code: "CAL", fields: [{ label: "Title", value: "Lunch" }, { label: "When", value: "2026-10-11 12:00-13:00" }] }), say("Lunch is ready."));
     await s.send(PHONES.matt, "lunch tomorrow at noon");
-    expect(s.to(PHONES.matt)).toContain("Added 'Lunch' Sun Oct 11 12:00-13:00 to your calendar. I couldn't add it to your Google Calendar (Google answered 503); I'll try again with your next event.");
+    expect(report(s)).toContain("Added 'Lunch' Sun Oct 11 12:00-13:00 to your calendar. I couldn't add it to your Google Calendar (Google answered 503); I'll try again with your next event. Done at once:");
     expect(s.db.events(s.matt.id, "2026-10-11T00:00", "2026-10-12T00:00")).toHaveLength(1);
     s.google.state.insertFails = false;
     s.script(delegate("dinner"), call("propose_action", { code: "CAL", fields: [{ label: "Title", value: "Dinner" }, { label: "When", value: "2026-10-11 19:00-20:00" }] }), say("Dinner is ready."));
     await s.send(PHONES.matt, "dinner tomorrow at 7");
-    expect(s.to(PHONES.matt)).toContain("Added 'Dinner' Sun Oct 11 19:00-20:00 to your calendar. It's on your Google Calendar too.");
+    expect(report(s)).toContain("Added 'Dinner' Sun Oct 11 19:00-20:00 to your calendar. It's on your Google Calendar too. Done at once:");
     expect(s.google.state.events.map((e) => e.summary)).toEqual(["Lunch", "Dinner"]);
   });
 

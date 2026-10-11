@@ -96,8 +96,12 @@ With the dev channel, send them with the REPL or `pnpm demo:chat`; dev senders h
    Matt gets `Asked Yadu about tomorrow 2:00-2:30. I'll let you know.` and Yadu gets `@matt would like to meet: 'Meeting' Sun Oct 11 14:00-14:30. Any time Sun Oct 11 12:00-17:00 works for Matt. Reply 'yes' and it goes on both calendars, or name another time.`
    Yadu replies `yes`: both calendars get the event (Google too, where connected) and both are texted `... is on both calendars.`
    Or Yadu replies `3 works better`: inside Matt's window, so it is booked at 3 right away; a time outside the window goes back to Matt, who answers the same way.
-   No Ledger on either side: a meeting moves no money, so the two people's own replies are the approval.
-7. **Matt checks in.**
+   No Ledger on either side under the default policy: a meeting moves no money, so the two people's own replies are the approval.
+7. **Matt decides what needs his Ledger.**
+   Matt texts `what needs my ledger?` and Jarvis answers from his policy: by default money, deleting the account and adding friends; calendar events and meetings just happen.
+   `ask my ledger for calendar events too` or `strict` tightens it at once; `relaxed` loosens it. Money always goes to the Ledger.
+   Under `strict`, "dentist tomorrow at 9" shows **Add to calendar** on the device again, and a meeting a friend confirms puts `Add to calendar / Title Coffee / When ... / With @yadu` on Matt's Ledger before it lands on his calendar.
+8. **Matt checks in.**
    Matt texts `did it go through?` or `thanks!`.
    The agent answers from what it already knows (the outcome notes from the Ledger), with no extra work behind the scenes.
 
@@ -444,8 +448,9 @@ AgentSign stays the product name, on the Ledger and the approval page.
 
 ## How the harness keeps the agent honest
 
-- Neither layer has risky tools.
-  The engine can read its owner's balance, friends, calendar (Google's too, once connected) and notes, remember things, send the Google Calendar connect link, talk to friends' agents and arrange meetings with friends (booked only once the friend says yes by text), but there is no tool that moves money, writes the owner's own calendar, or adds a friend.
+- Neither layer has a tool that moves money or deletes the account: those are always proposals for the Ledger.
+  The engine can read its owner's balance, friends, calendar (Google's too, once connected) and notes, remember things, send the Google Calendar connect link, talk to friends' agents and arrange meetings with friends (booked only once the friend says yes by text).
+  Calendar events and friend changes go to the Ledger only when the owner's Ledger policy says so (`standard` by default: friends yes, calendar and meetings no; `strict` gates all three; `relaxed` none); otherwise the same executor runs at once and the owner is told it is done.
 - Its only way to make something happen is one `propose_action` tool, which creates a pending approval.
 - The device parses the canonical action bytes itself, shows the title and every field, and signs those exact bytes only after the person approves on the device.
 - The server verifies the Ed25519 signature against the public key stored on the account before anything is executed.

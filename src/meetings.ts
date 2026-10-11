@@ -244,7 +244,8 @@ async function book(deps: MeetingDeps, meeting: Meeting, who: Account, other: Ac
   } else await tell(deps, other, `${howCome}: '${meeting.title}' with ${who.tag}, ${when}, ${where(other, who)}.${gOther ? ` ${gOther}` : ""}`);
   const mine = gated(who) ? `waits on ${firstName(who)}'s Ledger (their policy asks for that; the prompt goes out with the reply)` : `is on ${firstName(who)}'s calendar`;
   const theirs = gated(other) ? `${other.tag} confirms their side on their Ledger (their policy)` : `on ${other.tag}'s calendar`;
-  return { ok: true, reply, line: `Booked: '${meeting.title}' with ${other.tag}, ${when}: ${mine}; ${theirs}.${gWho ? ` ${gWho}` : ""} ${other.tag} was texted.` };
+  const status = gated(who) || gated(other) ? `: ${mine}; ${theirs}.` : ", is on both calendars.";
+  return { ok: true, reply, line: `Booked: '${meeting.title}' with ${other.tag}, ${when}${status}${gWho ? ` ${gWho}` : ""} ${other.tag} was texted.` };
 }
 
 /** A side whose policy sends meetings to the Ledger cannot be asked while something else waits there. */

@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createModel, DEFAULT_MODEL, type Model } from "../src/agent/xai.js";
 import { addMinutes, localNow } from "../src/format.js";
+import { policyOf } from "../src/policy.js";
 import { harness, isEngine, isPersona, PHONES, tgInbound } from "./helpers.js";
 import { receiptPng } from "./receipt.js";
 
@@ -129,6 +130,33 @@ describe.skipIf(!apiKey)(`live xAI (${modelName})`, () => {
     await h.send(PHONES.matt, "did yadu answer?");
     console.log(`check turn: ${timed.take()}; reply: ${JSON.stringify(h.to(PHONES.matt).at(-1))}`);
     expect(h.to(PHONES.matt).at(-1)).toMatch(/yes|booked|on both|calendar/i);
+  });
+
+  it("the owner tightens their Ledger policy in plain words, and the next calendar event goes to the device", { timeout: 180_000 }, async () => {
+    const timed = timedModel();
+    const h = harness(1, timed.model);
+    const matt = await h.onboard("matt", 0);
+    const tomorrow = addMinutes(localNow(), 24 * 60).slice(0, 10);
+    const shown = h.devices[0]!.shown.length;
+
+    await h.send(PHONES.matt, "dentist tomorrow at 9am for half an hour");
+    console.log(`default turn: ${timed.take()}; reply: ${JSON.stringify(h.to(PHONES.matt).at(-1))}`);
+    expect(h.devices[0]!.shown).toHaveLength(shown);
+    expect(h.db.events(matt.id, `${tomorrow}T00:00`, `${tomorrow}T24:00`)).toEqual([expect.objectContaining({ starts_at: `${tomorrow}T09:00`, ends_at: `${tomorrow}T09:30` })]);
+
+    await h.send(PHONES.matt, "from now on ask my ledger before you add anything to my calendar");
+    console.log(`policy turn: ${timed.take()}; reply: ${JSON.stringify(h.to(PHONES.matt).at(-1))}`);
+    expect(policyOf(h.db.account(matt.id)!)).toEqual({ preset: "standard", overrides: { calendar: true } });
+
+    await h.send(PHONES.matt, "gym tomorrow at 6pm");
+    console.log(`strict turn: ${timed.take()}; texts: ${JSON.stringify(h.to(PHONES.matt).slice(-2))}`);
+    expect(h.devices[0]!.shown.at(-1)).toMatchObject({ code: "CAL" });
+    expect(h.to(PHONES.matt).some((t) => t.includes("Please confirm on your Ledger: Add to calendar: Title") && t.includes("18:00-19:00"))).toBe(true);
+    expect(h.db.events(matt.id, `${tomorrow}T00:00`, `${tomorrow}T24:00`)).toHaveLength(2);
+
+    await h.send(PHONES.matt, "remind me, which kinds of things do you put on my ledger these days?");
+    console.log(`question turn: ${timed.take()}; reply: ${JSON.stringify(h.to(PHONES.matt).at(-1))}`);
+    expect(h.to(PHONES.matt).at(-1)).toMatch(/calendar/i);
   });
 
   it("a thank you note after a payment goes to the friend as a text, not to their agent's calendar", { timeout: 180_000 }, async () => {
