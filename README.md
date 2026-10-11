@@ -253,9 +253,12 @@ Amazon takes cards, not ETH, so the operator (you) fronts it: the owner's ETH go
 The treasury holds the ETH until Amazon confirms the order and sends it back automatically when nothing was ordered; anything unclear is flagged to you instead of retried.
 The design notes in `DESIGN.md` ("Buying on Amazon") spell out the state machine.
 
-Setup, Ethereum mode only:
+The deployed configuration (`fly.toml`) is the demo one: owners pay the treasury `0xf8381484CD2639618c690572aB35ff65E4bd7C5e` and `AMAZON_MERCHANT=mock` confirms every order with a generated order number after real amazon.com search and prices, buying nothing.
+The treasury there is receive-only (no key on the server), which is fine because a mock order never fails and so never refunds.
 
-1. A treasury wallet on Base: `TREASURY_PRIVATE_KEY`.
+Setup for real orders, Ethereum mode only:
+
+1. A treasury wallet on Base: `TREASURY_PRIVATE_KEY` (or `TREASURY_ADDRESS` for a receive-only treasury whose refunds you send by hand).
    Keep a little ETH on it for refund gas (a refund costs well under a cent on Base).
    Buyers see its address on the Ledger and in the text.
 2. Your Amazon session: run `pnpm amazon:login` on your Mac.
@@ -423,9 +426,10 @@ Set them in `.env` (see `.env.example`) or in the shell.
 | `PUBLIC_URL` | `http://127.0.0.1:7788` | Base of the links in approval texts. Must be https (ngrok, `tailscale serve`) for other computers. |
 | `WEB_HOST` | `127.0.0.1` | Interface the approval page listens on. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | none | OAuth web client that lets owners connect their Google Calendar (eth mode). Redirect URI: `PUBLIC_URL/google/callback`. See "Google Calendar". |
-| `TREASURY_PRIVATE_KEY` | none | Turns on buying on Amazon (eth mode): the wallet that receives buyers' ETH and refunds them. See "Buying on Amazon". |
+| `TREASURY_PRIVATE_KEY` | none | The wallet that receives buyers' ETH and refunds them (eth mode). See "Buying on Amazon". |
 | `AMAZON_STORAGE_STATE`, `AMAZON_STORAGE_STATE_PATH` | none | Your Amazon session from `pnpm amazon:login`, as JSON or base64, or a path to the file. |
-| `AMAZON_MERCHANT` | `browser` with a session | `browser` (amazon.com through Chromium) or `demo` (a built-in catalog, nothing is ordered). |
+| `TREASURY_ADDRESS` | none | A receive-only treasury (no refunds from the server); with `TREASURY_PRIVATE_KEY` the two must match. |
+| `AMAZON_MERCHANT` | `browser` with a session | `mock` (real search and prices, every order confirmed, nothing bought), `browser` (amazon.com through Chromium) or `demo` (a built-in catalog). |
 | `AMAZON_DRY_RUN` | unset | `1`: run the checkout but never press Place your order; the buyer is refunded. |
 | `PURCHASE_LIMIT_USD` | `20` | Cap on one order's checkout total, item plus shipping and tax. |
 | `PURCHASE_SHIPS_TO` | `<operator>'s address` | Where orders go, in words, as told to buyers. |

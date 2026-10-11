@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { newActionId } from "../src/actions.js";
 import { openDb } from "../src/db.js";
 import { signOnEthApp, verifyEthSignature } from "../src/device/eth.js";
-import { DEMO_CATALOG, demoMerchant, type DemoItem, type Outcome } from "../src/merchant.js";
+import { alwaysOrderedMerchant, DEMO_CATALOG, demoMerchant, type DemoItem, type Outcome } from "../src/merchant.js";
 import { baseMoney, usdToWei } from "../src/money.js";
 import { createPurchases, type Purchases } from "../src/purchases.js";
 import { createTreasury } from "../src/treasury.js";
@@ -25,7 +25,7 @@ async function setup(options: { catalog?: DemoItem[]; treasuryEth?: string; rece
   const devices = fakeEthDevices([matt]);
   const money = baseMoney(chain);
   const merchant = demoMerchant(options.catalog ?? DEMO_CATALOG, { onConfirm: options.onConfirm });
-  const treasury = createTreasury(vault.privateKey, chain);
+  const treasury = createTreasury({ privateKey: vault.privateKey }, chain);
   let purchases!: Purchases;
   const h = harness(0, undefined, {
     money,
@@ -88,7 +88,7 @@ describe("buying on Amazon with ETH", () => {
     expect(h.to(PHONES.matt).slice(-3)).toEqual([
       `Gum coming right up.\n\nPlease confirm on your Ledger: Buy on Amazon: Trident Original Sugar Free Gum, 14 Pieces (P..., $4.35 all in. That is 0.001087 ETH to the AgentSign treasury ${h.treasury.address}; it ships to Matt's address, and comes back to you if the order doesn't go through.`,
       `Paid 0.001087 ETH ($4.35) to the treasury on Base for Trident Original Sugar Free Gum, 14 Pieces (P.... I'll place the Amazon order as soon as Base confirms it. ${link}`,
-      `Ordered on Amazon: ${GUM.title}. Order ${purchase.order_id}, paid 0.001087 ETH ($4.35). It ships to Matt's address.`,
+      `Order confirmed on Amazon: ${GUM.title}. Order ${purchase.order_id}, paid 0.001087 ETH ($4.35). It ships to Matt's address.`,
     ]);
     // No generic "Confirmed on Base" text: the order text is the confirmation.
     expect(h.to(PHONES.matt).some((t) => t.startsWith("Confirmed on Base"))).toBe(false);
@@ -226,6 +226,26 @@ describe("buying on Amazon with ETH", () => {
   });
 });
 
+describe("a store where every order is confirmed, and a treasury without a key", () => {
+  it("quotes from the listed price, confirms every order, and cannot refund", async () => {
+    const demo = demoMerchant();
+    const store = alwaysOrderedMerchant({ search: (q, l) => demo.search(q, l), taxRate: 0.1 });
+    const [gum] = await store.search("trident gum", 1);
+    const quote = await store.prepare(gum!.asin);
+    expect(quote).toMatchObject({ asin: GUM.asin, itemCents: 399, totalCents: 439 });
+    const outcome = await store.confirm(quote);
+    expect(outcome.status).toBe("ordered");
+    if (outcome.status === "ordered") expect(outcome.orderId).toMatch(/^\d{3}-\d{7}-\d{7}$/);
+    await expect(store.prepare("B0NOPE0000")).rejects.toThrow("Nothing on Amazon has the item id B0NOPE0000");
+
+    const { chain } = stubChain({});
+    const receiveOnly = createTreasury({ address: "0xf8381484CD2639618c690572aB35ff65E4bd7C5e" }, chain);
+    expect(receiveOnly.address).toBe("0xf8381484CD2639618c690572aB35ff65E4bd7C5e");
+    await expect(receiveOnly.refund(matt.address, 1n)).rejects.toThrow("has no key on this server");
+    expect(() => createTreasury({ address: "nope" }, chain)).toThrow("TREASURY_ADDRESS is not a valid 0x address");
+  });
+});
+
 describe("purchase recovery after a restart", () => {
   function bare(statusRows: { status: "funded" | "ordering" | "refunding" | "proposed"; hash?: string }[]) {
     const db = openDb(":memory:");
@@ -233,7 +253,7 @@ describe("purchase recovery after a restart", () => {
     const { chain, sent: broadcasts } = stubChain({ [addr(vault)]: parseEther("0.01") });
     const merchant = demoMerchant();
     const ch = fakeChannel();
-    const purchases = createPurchases({ db, merchant, treasury: createTreasury(vault.privateKey, chain), money: baseMoney(chain), channel: ch.channel, operator: { name: "Matt", handle: () => OPERATOR } });
+    const purchases = createPurchases({ db, merchant, treasury: createTreasury({ privateKey: vault.privateKey }, chain), money: baseMoney(chain), channel: ch.channel, operator: { name: "Matt", handle: () => OPERATOR } });
     const quote = { quoteId: "q1", asin: GUM.asin, title: GUM.title, itemCents: 399, totalCents: 435, expiresAt: Date.now() + 60_000 };
     const ids = statusRows.map((row, i) => {
       const id = newActionId();
@@ -256,6 +276,6 @@ describe("purchase recovery after a restart", () => {
       expect.stringContaining("needs you: the server restarted while the order was in progress"),
       expect.stringContaining("needs you: the server restarted while the refund was in progress"),
     ]);
-    expect(r.to(PHONES.matt)[0]).toMatch(/^Ordered on Amazon: Trident/);
+    expect(r.to(PHONES.matt)[0]).toMatch(/^Order confirmed on Amazon: Trident/);
   });
 });

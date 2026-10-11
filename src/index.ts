@@ -11,7 +11,7 @@ import { openDb } from "./db.js";
 import { createBaseChain } from "./chain.js";
 import { combineDeviceManagers, createDeviceManager, createEthDeviceManager, createRemoteDeviceManager, parseDevicesEnv } from "./device/index.js";
 import { createAmazonMerchant } from "./amazon/browser.js";
-import { demoMerchant, type Merchant } from "./merchant.js";
+import { alwaysOrderedMerchant, demoMerchant, type Merchant } from "./merchant.js";
 import { baseMoney, demoMoney, formatEth } from "./money.js";
 import { createPurchases, type Purchases } from "./purchases.js";
 import { createTreasury } from "./treasury.js";
@@ -119,17 +119,18 @@ log(`AgentSign listening on ${channel.name} (mode ${mode}, model ${process.env.X
  */
 async function setupPurchases(): Promise<Purchases | undefined> {
   const key = process.env.TREASURY_PRIVATE_KEY?.trim();
+  const address = process.env.TREASURY_ADDRESS?.trim();
   const kind = process.env.AMAZON_MERCHANT?.trim() || (process.env.AMAZON_STORAGE_STATE || process.env.AMAZON_STORAGE_STATE_PATH ? "browser" : "");
-  if (!key && !kind) {
-    log("amazon: off (set TREASURY_PRIVATE_KEY and AMAZON_STORAGE_STATE to let owners buy things)");
+  if (!key && !address && !kind) {
+    log("amazon: off (set TREASURY_ADDRESS or TREASURY_PRIVATE_KEY, and AMAZON_MERCHANT, to let owners buy things)");
     return undefined;
   }
   if (mode !== "eth") {
     log("amazon: needs DEVICE_MODE=eth (buyers pay the treasury in ETH), so it is off");
     return undefined;
   }
-  if (!key || !kind) {
-    console.error(`Buying on Amazon needs both TREASURY_PRIVATE_KEY and an Amazon session (AMAZON_STORAGE_STATE, or AMAZON_MERCHANT=demo). See "Buying on Amazon" in README.md.`);
+  if (!(key || address) || !kind) {
+    console.error(`Buying on Amazon needs a treasury (TREASURY_ADDRESS or TREASURY_PRIVATE_KEY) and a store (AMAZON_MERCHANT=mock or demo, or an Amazon session in AMAZON_STORAGE_STATE). See "Buying on Amazon" in README.md.`);
     process.exit(1);
   }
   const limitUsd = Number(process.env.PURCHASE_LIMIT_USD || 20);
@@ -141,27 +142,50 @@ async function setupPurchases(): Promise<Purchases | undefined> {
   const chain = createBaseChain({ rpcUrl: process.env.BASE_RPC_URL });
   let treasury;
   try {
-    treasury = createTreasury(key, chain);
+    treasury = createTreasury({ privateKey: key, address }, chain);
   } catch (err) {
     console.error((err as Error).message);
     process.exit(1);
   }
+  const amazonLog = (line: string) => log(`[amazon] ${line}`);
   let merchant: Merchant & { warm?(): Promise<void> };
   if (kind === "demo") merchant = demoMerchant();
-  else if (kind === "browser") {
+  else if (kind === "mock") {
+    // Every order is confirmed, nothing is bought: real search and prices from amazon.com (no session needed), the
+    // demo catalog when amazon.com cannot be searched (captcha, no Chromium), a generated order number at confirm.
+    const live = createAmazonMerchant({ storageState: '{"cookies":[],"origins":[]}', limitCents, log: amazonLog });
+    const demo = demoMerchant();
+    merchant = alwaysOrderedMerchant({
+      log: amazonLog,
+      search: async (query, limit) => {
+        try {
+          const found = await live.search(query, limit);
+          if (found.length) return found;
+        } catch (err) {
+          amazonLog(`live search failed (${(err as Error).message}); using the demo catalog`);
+        }
+        return demo.search(query, limit);
+      },
+    });
+    const closeLive = merchant.close;
+    merchant.close = async () => {
+      await closeLive();
+      await live.close();
+    };
+  } else if (kind === "browser") {
     let state = process.env.AMAZON_STORAGE_STATE?.trim() ?? "";
     const path = process.env.AMAZON_STORAGE_STATE_PATH?.trim();
     if (!state && path) state = readFileSync(path, "utf8");
     // The secret may be the JSON itself or base64 of it (fly secrets are easier to set that way).
     if (state && !state.startsWith("{")) state = Buffer.from(state, "base64").toString("utf8");
     try {
-      merchant = createAmazonMerchant({ storageState: state, limitCents, dryRun: /^(1|true|yes)$/i.test(process.env.AMAZON_DRY_RUN ?? ""), log: (line) => log(`[amazon] ${line}`) });
+      merchant = createAmazonMerchant({ storageState: state, limitCents, dryRun: /^(1|true|yes)$/i.test(process.env.AMAZON_DRY_RUN ?? ""), log: amazonLog });
     } catch (err) {
       console.error(`AMAZON_STORAGE_STATE is not a usable Amazon session: ${(err as Error).message}`);
       process.exit(1);
     }
   } else {
-    console.error(`Unknown AMAZON_MERCHANT "${kind}". Use browser or demo.`);
+    console.error(`Unknown AMAZON_MERCHANT "${kind}". Use mock, demo or browser.`);
     process.exit(1);
   }
   const operatorTag = process.env.OPERATOR_TAG?.trim().toLowerCase();
@@ -177,7 +201,7 @@ async function setupPurchases(): Promise<Purchases | undefined> {
     operator: { name: operatorName, handle: () => (operatorTag ? db.primaryHandle(db.accountByTag(operatorTag.startsWith("@") ? operatorTag : `@${operatorTag}`)?.id ?? -1) : undefined) },
     log,
   });
-  log(`amazon: on (${kind}${process.env.AMAZON_DRY_RUN ? ", dry run" : ""}), limit $${limitUsd.toFixed(2)} per order, treasury ${treasury.address}, ships to ${purchases.shipsTo}`);
+  log(`amazon: on (${kind}${process.env.AMAZON_DRY_RUN ? ", dry run" : ""}), limit $${limitUsd.toFixed(2)} per order, treasury ${treasury.address}${key ? "" : " (receive only, refunds by hand)"}, ships to ${purchases.shipsTo}`);
   treasury.balanceWei().then((wei) => log(`amazon: treasury holds ${formatEth(wei)} ETH for refunds and gas`), (err: unknown) => log(`amazon: could not read the treasury balance: ${(err as Error).message}`));
   // A browser session that is signed out shows up in the log at start, not at the first purchase.
   merchant.warm?.().then(() => log("amazon: session ready"), (err: unknown) => log(`amazon: WARNING ${(err as Error).message}`));

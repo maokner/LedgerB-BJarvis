@@ -142,7 +142,7 @@ export function createPurchases(o: PurchasesOptions): Purchases {
     if (outcome.status === "ordered") {
       set(p, "ordered", { orderId: outcome.orderId });
       note(p, `ordered on ${merchant.name}, order ${outcome.orderId}.`);
-      return send(ownerHandle(p), `Ordered on ${merchant.name}: ${shortTitle(p.title, 80)}. Order ${outcome.orderId}, paid ${paid(p)}. It ships to ${shipsTo}.`);
+      return send(ownerHandle(p), `Order confirmed on ${merchant.name}: ${shortTitle(p.title, 80)}. Order ${outcome.orderId}, paid ${paid(p)}. It ships to ${shipsTo}.`);
     }
     if (outcome.status === "no_purchase") return refund(p, outcome.reason);
     return escalate(p, "review", outcome.reason, `I couldn't tell whether ${merchant.name} took the order (${outcome.reason}). Nothing more is charged; ${operator.name} is checking and you'll hear back.`);

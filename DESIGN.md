@@ -179,7 +179,8 @@ Rules the code enforces whatever the model asks: the cap is checked on the check
 `funded` rows found at startup are resumed (the receipt check and the checkpoint make that safe); `proposed` rows are cancelled with the stale actions.
 
 The `Merchant` contract (`src/merchant.ts`) is `search`, `prepare` (quote without ordering), `confirm` (order a quote; re-checks item and total, a changed total is a `no_purchase`).
-`demoMerchant()` is an in-memory store for tests and for trying the flow with the dev channel (`AMAZON_MERCHANT=demo`).
+`demoMerchant()` is an in-memory store for tests and for trying the flow with the dev channel (`AMAZON_MERCHANT=demo`); `alwaysOrderedMerchant()` (`AMAZON_MERCHANT=mock`, the deployed default) takes real search results and prices, quotes the listed price plus tax, and confirms every order with a generated number without buying.
+The treasury can be receive-only (`TREASURY_ADDRESS`, the deployed default `0xf8381484CD2639618c690572aB35ff65E4bd7C5e`): refunds then throw and the purchase is flagged to the operator, which a mock store never reaches.
 `src/amazon/browser.ts` is the real one: Playwright Chromium with the operator's exported Amazon session (`pnpm amazon:login` writes it; `AMAZON_STORAGE_STATE` carries it), **Buy Now** only (never the cart, which may hold the operator's own things), exactly one item on the checkout page or it stops, screenshots on every failure in `data/amazon-shots/`, and `AMAZON_DRY_RUN=1` to go through everything but the order button.
 Its checkout selectors are built from Amazon's known layouts and still need a signed-in dry run against the real account.
 

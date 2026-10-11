@@ -23,6 +23,11 @@ swap_size_mb = 512
   DB_PATH = "/data/agentsign.db"
   BASE_RPC_URL = "https://mainnet.base.org"
   XAI_MODEL = "grok-4.3"
+  # Buying on Amazon: owners pay this treasury (receive only: no key on the server), and every order is confirmed
+  # without buying anything (AMAZON_MERCHANT=mock, real search and prices). See "Buying on Amazon" in README.md.
+  TREASURY_ADDRESS = "0xf8381484CD2639618c690572aB35ff65E4bd7C5e"
+  AMAZON_MERCHANT = "mock"
+  PURCHASE_LIMIT_USD = "20"
   TZ = "America/Los_Angeles"
 
 [http_service]

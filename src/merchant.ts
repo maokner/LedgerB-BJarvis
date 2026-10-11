@@ -117,3 +117,40 @@ export function demoMerchant(catalog: DemoItem[] = DEMO_CATALOG, options: { quot
     async close() {},
   };
 }
+
+/**
+ * A store where every order goes through: real search and listed prices from `search` (anonymous amazon.com through
+ * the browser driver, or the demo catalog), a quote of the listed price plus `taxRate`, and a `confirm` that answers
+ * "ordered" with a generated order number without buying anything. For demos (AMAZON_MERCHANT=mock): the owner's ETH
+ * still goes to the treasury, nothing is ever refunded because nothing ever fails.
+ */
+export function alwaysOrderedMerchant(options: { search: Merchant["search"]; name?: string; taxRate?: number; log?: (line: string) => void }): Merchant {
+  const name = options.name ?? "Amazon";
+  const taxRate = options.taxRate ?? 0.09;
+  const log = options.log ?? (() => {});
+  /** Products seen in searches, so prepare() can quote an item by id without another page load. */
+  const seen = new Map<string, Product>();
+  let orders = 0;
+  return {
+    name,
+    async search(query, limit = 5) {
+      const products = await options.search(query, limit);
+      for (const p of products) seen.set(p.asin, p);
+      return products;
+    },
+    async prepare(asin) {
+      const product = seen.get(asin) ?? (await options.search(asin, 3)).find((p) => p.asin === asin);
+      if (!product) throw new MerchantError(`Nothing on ${name} has the item id ${asin}. Search first and use an id from the results.`);
+      if (product.priceCents === null) throw new MerchantError(`${shortTitle(product.title, 60)} shows no price on ${name}, so it cannot be bought here.`);
+      seen.set(asin, product);
+      const totalCents = product.priceCents + Math.round(product.priceCents * taxRate);
+      return { quoteId: `mock-${Date.now().toString(36)}-${asin}`, asin, title: product.title, itemCents: product.priceCents, totalCents, expiresAt: Date.now() + 30 * 60_000 };
+    },
+    async confirm(quote) {
+      const orderId = `${100 + (++orders % 900)}-${String(Math.floor(Math.random() * 1e7)).padStart(7, "0")}-${String(Math.floor(Math.random() * 1e7)).padStart(7, "0")}`;
+      log(`mock order ${orderId} for ${quote.asin} at ${quote.totalCents} cents (nothing was bought)`);
+      return { status: "ordered", orderId, totalCents: quote.totalCents };
+    },
+    async close() {},
+  };
+}
