@@ -4,7 +4,7 @@
  *
  *   ACC            -> "Verify address" on the device; the signature is the placeholder "verified"
  *                     (the approval page signs actionMessage() instead, see remote.ts)
- *   PAY            -> an EIP-1559 transfer built from action.meta; the signature is the raw signed tx
+ *   PAY, BUY       -> an EIP-1559 transfer built from action.meta; the signature is the raw signed tx
  *   CAL, FRQ, FAC  -> personal_sign of actionMessage(action); the signature is the 65-byte hex
  */
 import { createRequire } from "node:module";

@@ -68,7 +68,7 @@ An `Action` is a short code plus 1..6 label/value pairs (see `src/types.ts`). `s
 
 The device parses these bytes itself, shows the title for the code and every field, and after the person presses both buttons on **Approve** it signs `sha256(bytes)` with Ed25519 (SLIP-0010 path `m/44'/8008'/0'/0'/0'`). The server verifies with `verifyActionSignature()` against the pubkey stored on the account. Unknown codes are refused by the device. The action id makes every signature single-use: the server only accepts a signature for the action it is currently waiting on.
 
-Codes: `PAY` Send money, `CAL` Add to calendar, `FRQ` Friend request, `FAC` Accept friend, `ACC` Create account, `DEL` Delete account (Ethereum mode only: the custom app refuses codes it does not know, so the engine does not offer it there).
+Codes: `PAY` Send money, `CAL` Add to calendar, `FRQ` Friend request, `FAC` Accept friend, `ACC` Create account, `DEL` Delete account, `BUY` Buy on Amazon (`DEL` and `BUY` are Ethereum mode only: the custom app refuses codes it does not know, so the engine does not offer them there).
 
 Field conventions (the server builds them, the device just shows them):
 
@@ -80,6 +80,7 @@ Field conventions (the server builds them, the device just shows them):
 | FRQ | `To @yadu` |
 | FAC | `From @matt` |
 | DEL | `Tag @matt`, `Address 0x...` (the full lowercase address) |
+| BUY | `Item Trident Original Sugar Free Gum...` (the title, cut to one line), `Total $4.35` (item, shipping and tax), `ETH 0.001087`, `To 0x...` (the treasury) |
 
 ## Device manager
 
@@ -107,7 +108,7 @@ Two model layers per account (`src/agent/`), in the spirit of Poke:
 - the **persona**, Jarvis, talks to the owner: a clever friend over text (the Poke persona, minus anything that is Poke's), concise, witty when it fits, mirroring the owner's casing and tone, plain text, no emoji. Its only tool is `delegate(goal, context)`, which it never mentions. It knows the owner's tag, address and balance, greets and offers three things to try on the first turn after sign-up, answers setup and "what can you do" questions without delegating, and adds one in-the-moment offer in roughly one reply out of five.
 - the **engine** never talks to the owner. It runs the tools and reports plain facts back to the persona, never inventing anything.
 
-Safe tools (engine, execute directly): `get_balance`, `list_friends`, `get_calendar`, `get_notes`, `remember`, `list_transactions`, `send_note`, `message_agent`, `propose_meeting`, `answer_meeting`, `set_ledger_policy`, `connect_google_calendar`, `disconnect_google_calendar`.
+Safe tools (engine, execute directly): `get_balance`, `list_friends`, `get_calendar`, `get_notes`, `remember`, `list_transactions`, `send_note`, `message_agent`, `propose_meeting`, `answer_meeting`, `set_ledger_policy`, `connect_google_calendar`, `disconnect_google_calendar`, and where buying is set up `search_amazon` and `list_purchases`.
 
 The Ledger policy lives on the account (`accounts.policy`, JSON: a preset plus per-guard overrides) and is read by `propose_action`, by `src/meetings.ts` when a meeting is booked, and by the `accept` shortcut.
 When the policy does not gate an action, `executeDirectly` runs the very same executor the Ledger path would run, in a transaction, at once; the engine's result says "Done at once", the persona tells the owner, and the task ends on that line (like a proposal does) so the model cannot embellish it.
@@ -149,6 +150,43 @@ Only accepted friends can be reached; the engine composes the note in the owner'
 - `FRQ`: friendship row `pending`, text the target's handles.
 - `FAC`: friendship `accepted`, text both.
 - `DEL`: in one transaction remove the account, its handles, friendships, meetings, notes, events, chat history and peer threads; the actions log and transactions stay, detached from it (demo balances are forfeited). The person is a stranger again and can sign up anew.
+- `BUY`: the signed transfer to the treasury is already broadcast (like an Ethereum-mode `PAY`); the executor only texts "Paid ... I'll place the Amazon order as soon as Base confirms it". `src/purchases.ts` takes it from there (below).
+
+## Buying on Amazon (`src/purchases.ts`, `src/merchant.ts`, `src/amazon/`, `src/treasury.ts`)
+
+Amazon takes cards, not ETH, so the operator fronts the purchase: owners pay ETH to the operator's **treasury** wallet on Base, and the server orders the item on the operator's own Amazon account with the card saved there.
+The treasury is the escrow: it holds the ETH from the Ledger's signature until Amazon confirms the order, and sends it back when nothing was ordered.
+It is custodial (a wallet the server holds the key of), not a smart contract; the on-chain record is the two plain transfers.
+
+```
+owner: "buy me trident gum"
+  engine: search_amazon ──► merchant.search          (anonymous read of amazon.com)
+  engine: propose_action BUY Item <asin>
+          ──► merchant.prepare: Buy Now, read the exact order total, leave   (nothing held)
+          ──► cap: total <= PURCHASE_LIMIT_USD (default $20), else an error the model reports
+          ──► money.transfer: wei for the total at the Coinbase spot price, fees, balance check
+          ──► purchases row "proposed"; BUY on the Ledger (the Ethereum app clear-signs the transfer)
+  signed  ──► tx broadcast, row "funded", text "Paid ..."
+  receipt ──► Base confirms (3 tries of 2 min; failed: "cancelled"; still pending: "review")
+          ──► row "ordering"            (the checkpoint: written before the side effect, never re-run)
+          ──► merchant.confirm: Buy Now again, same item, same total, Place your order
+                ordered      ──► row "ordered", text "Ordered on Amazon: ..., Order 111-..."
+                no_purchase  ──► row "refunding", treasury pays the ETH back (gas on the treasury), "refunded", text with the basescan link
+                uncertain    ──► row "review", the owner and the operator are texted; nothing is retried or refunded
+```
+
+Rules the code enforces whatever the model asks: the cap is checked on the checkout total (item, shipping, tax) at `prepare` and again at `confirm`; the card is charged only after the owner's ETH is confirmed on Base; a refund goes out only on a definite no-purchase (`merchant.confirm` may answer `no_purchase` only when it is certain nothing was ordered, and once the order button was pressed it answers `ordered` or `uncertain`); `ordering` and `refunding` rows found at startup go to `review` instead of being redone, so a crash can neither order nor refund twice.
+`funded` rows found at startup are resumed (the receipt check and the checkpoint make that safe); `proposed` rows are cancelled with the stale actions.
+
+The `Merchant` contract (`src/merchant.ts`) is `search`, `prepare` (quote without ordering), `confirm` (order a quote; re-checks item and total, a changed total is a `no_purchase`).
+`demoMerchant()` is an in-memory store for tests and for trying the flow with the dev channel (`AMAZON_MERCHANT=demo`).
+`src/amazon/browser.ts` is the real one: Playwright Chromium with the operator's exported Amazon session (`pnpm amazon:login` writes it; `AMAZON_STORAGE_STATE` carries it), **Buy Now** only (never the cart, which may hold the operator's own things), exactly one item on the checkout page or it stops, screenshots on every failure in `data/amazon-shots/`, and `AMAZON_DRY_RUN=1` to go through everything but the order button.
+Its checkout selectors are built from Amazon's known layouts and still need a signed-in dry run against the real account.
+
+Texts to the owner, one per step: the reply with the confirm prompt (item, total all in, ETH, treasury address, where it ships, "comes back to you if the order doesn't go through"), "Paid ..." with the basescan link once broadcast, then "Ordered on Amazon ..." or "Amazon didn't take the order (...), your ETH is on its way back" or "I couldn't tell whether Amazon took the order ...".
+Outcomes are also system notes in the owner's history, so the next turn can answer "did it ship?".
+The operator (`OPERATOR_TAG`) is texted only for `review` and `refund_failed`.
+Everything ships to the Amazon account's default address (`PURCHASE_SHIPS_TO` says so to buyers); an order is one unit of one item.
 
 ## Channels
 
@@ -160,4 +198,4 @@ The dev channel is an HTTP server (`POST /dev/message`, `GET /dev/outbox`) plus 
 
 ## Non-goals
 
-No two-way Google Calendar sync (Google events are read and AgentSign events are mirrored there; edits made on Google are not pulled back into the table), no multi-process agent federation, no Flex/Stax UI, no tokens other than ETH yet. Keep every file short and obvious.
+No smart-contract escrow for purchases (the treasury is a wallet the operator controls; the refund path is code, not a contract), no buying elsewhere than Amazon, no delivery to anywhere but the operator's own address, no two-way Google Calendar sync (Google events are read and AgentSign events are mirrored there; edits made on Google are not pulled back into the table), no multi-process agent federation, no Flex/Stax UI, no tokens other than ETH yet. Keep every file short and obvious.

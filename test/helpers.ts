@@ -9,6 +9,7 @@ import { createApp } from "../src/app.js";
 import { openDb } from "../src/db.js";
 import type { Calendar } from "../src/calendar/google.js";
 import type { Money } from "../src/money.js";
+import type { Purchases } from "../src/purchases.js";
 import type { Action, Channel, DeviceInfo, DeviceManager, InboundMessage, SignResult } from "../src/types.js";
 
 export type Policy = "approve" | "reject" | "timeout" | "error" | "wrong-key";
@@ -123,21 +124,34 @@ export function tgInbound(id: number, text: string, username?: string, name?: st
 }
 
 /** A full app with in-memory DB, `deviceCount` fake devices, a recording channel and a scripted (or given) model. */
-export function harness(deviceCount = 3, model?: Model, extra: { money?: Money; deviceManager?: DeviceManager; db?: ReturnType<typeof openDb>; calendar?: Calendar } = {}) {
+export function harness(
+  deviceCount = 3,
+  model?: Model,
+  extra: {
+    money?: Money;
+    deviceManager?: DeviceManager;
+    db?: ReturnType<typeof openDb>;
+    calendar?: Calendar;
+    /** Buying on Amazon, built on the harness's own DB and channel. */
+    purchases?: (ctx: { db: ReturnType<typeof openDb>; channel: Pick<Channel, "send">; log: (line: string) => void }) => Purchases;
+  } = {},
+) {
   const db = extra.db ?? openDb(":memory:");
   const { manager, devices } = fakeDevices(deviceCount);
   const ch = fakeChannel();
   const scripted = scriptedModel();
   const logs: string[] = [];
+  const log = (l: string) => logs.push(l);
   const app = createApp({
     db,
     deviceManager: extra.deviceManager ?? manager,
     channel: ch.channel,
     model: model ?? scripted.model,
     personaModel: model ? undefined : "",
-    log: (l) => logs.push(l),
+    log,
     money: extra.money,
     calendar: extra.calendar,
+    purchases: extra.purchases?.({ db, channel: ch.channel, log }),
   });
   const deliver = async (message: InboundMessage) => {
     await app.handleInbound(message);

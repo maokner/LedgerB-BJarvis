@@ -13,6 +13,7 @@
     "demo:chat": "tsx scripts/demo-chat.ts",
     "voice:chat": "tsx scripts/voice-chat.ts",
     "build:web": "tsx scripts/build-web.ts",
+    "amazon:login": "tsx scripts/amazon-login.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"

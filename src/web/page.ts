@@ -1,5 +1,5 @@
 /** The approval page at /sign/<token>: what the Ledger will show, one button, and a timeline. Script: /ledger.js. */
-import { ACTION_TITLES, type Action } from "../types.js";
+import { ACTION_TITLES, type Action, isTxCode } from "../types.js";
 
 export interface PageView {
   action: Action;
@@ -73,8 +73,8 @@ export function page(v: PageView): string {
   const title = ACTION_TITLES[action.code];
   const n = at[v.status] ?? 1;
   const steps = STEPS.map((name, i) => `<li class="${i < n ? "done" : i === n ? (v.status === "rejected" || v.status === "expired" || v.status === "failed" ? "fail" : "now") : ""}"><i></i><span>${name}</span></li>`).join("");
-  const amount = action.code === "PAY" ? action.fields.find((f) => f.label === "Amount") : undefined;
-  const eth = action.code === "PAY" ? action.fields.find((f) => f.label === "ETH") : undefined;
+  const amount = isTxCode(action.code) ? action.fields.find((f) => f.label === "Amount") : undefined;
+  const eth = isTxCode(action.code) ? action.fields.find((f) => f.label === "ETH") : undefined;
   const rows = action.fields
     .filter((f) => f !== amount && f !== eth)
     .map((f) => `<div${isAddress(f.value) ? ' class="addr"' : ""}><dt>${esc(f.label)}</dt><dd>${esc(f.value)}</dd></div>`)

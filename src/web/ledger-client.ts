@@ -39,7 +39,7 @@ interface State {
 const base = location.pathname.replace(/\/+$/, "");
 const $ = (id: string) => document.getElementById(id) as HTMLElement;
 const go = $("go") as HTMLButtonElement;
-const DONE: Record<string, string> = { PAY: "Sent on Base", CAL: "Added to calendar", FRQ: "Friend request sent", FAC: "Friend added", ACC: "Account created" };
+const DONE: Record<string, string> = { PAY: "Sent on Base", BUY: "Paid, ordering on Amazon", CAL: "Added to calendar", FRQ: "Friend request sent", FAC: "Friend added", ACC: "Account created", DEL: "Account deleted" };
 const HEAD: Record<string, string> = { approved: "Verified. Finishing up", executed: "Done", rejected: "Rejected", expired: "Expired", failed: "Did not go through" };
 const EXPIRED = "This request expired on the server. Ask Jarvis again and open the new link.";
 /** What to press while the device shows the request. */

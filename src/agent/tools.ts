@@ -15,6 +15,7 @@ import { ACTION_TITLES, type Action, type ActionField, type Channel } from "../t
 import type { ToolSpec } from "./xai.js";
 import { txLink } from "../chain.js";
 import { demoMoney, type Money } from "../money.js";
+import type { Purchases } from "../purchases.js";
 import { botMention } from "./bot.js";
 
 export interface Tools {
@@ -134,11 +135,13 @@ export const OWNER_TOOL_SPECS: ToolSpec[] = [
       "PAY: To @tag (or a 0x address in Ethereum mode), Amount like $5.00 (or like 0.001 ETH in Ethereum mode), optional Memo (a few words). " +
       "CAL: the owner's own event (never a meeting with a friend: that is propose_meeting): Title, When as YYYY-MM-DD HH:MM-HH:MM (24h local time). " +
       "FRQ (friend request): To @tag. FAC (accept a friend request): From @tag. " +
-      "DEL (delete the owner's own account, only when they clearly ask to delete, close or reset it): no fields needed.",
+      "DEL (delete the owner's own account, only when they clearly ask to delete, close or reset it): no fields needed. " +
+      "BUY (buy one item on Amazon, paid in ETH; only where the facts say Amazon is available): Item <the 10-character item id from search_amazon>. " +
+      "It quotes the exact total with shipping and tax, refuses anything over the limit, and the money comes back if the order does not go through.",
     parameters: {
       type: "object",
       properties: {
-        code: { type: "string", enum: ["PAY", "CAL", "FRQ", "FAC", "DEL"] },
+        code: { type: "string", enum: ["PAY", "CAL", "FRQ", "FAC", "DEL", "BUY"] },
         fields: {
           type: "array",
           items: { type: "object", properties: { label: { type: "string" }, value: { type: "string" } }, required: ["label", "value"] },
@@ -147,6 +150,18 @@ export const OWNER_TOOL_SPECS: ToolSpec[] = [
       required: ["code", "fields"],
     },
   },
+];
+
+/** Only where buying is set up (src/purchases.ts). */
+export const PURCHASE_TOOL_SPECS: ToolSpec[] = [
+  {
+    name: "search_amazon",
+    description:
+      "Search Amazon for something the owner wants to buy. Returns up to a few matching items with their item id, title and listed price (before shipping and tax). " +
+      "Pick the one that best fits what they asked (cheapest that matches, unless they said otherwise), then propose_action BUY with Item <id>. Never guess an item id.",
+    parameters: { type: "object", properties: { query: { type: "string", description: "What to look for, like 'trident gum' or 'usb-c cable 6ft'" } }, required: ["query"] },
+  },
+  { name: "list_purchases", description: "The owner's Amazon purchases through you: item, total, status (ordered, refunded, in progress), order number.", parameters: none },
 ];
 
 export const PEER_TOOL_SPECS: ToolSpec[] = [
@@ -219,7 +234,7 @@ function readFields(raw: unknown): Map<string, string> {
 }
 
 /** Turns what the model proposed into an Action a device can show, or an error the model can act on. */
-export async function buildAction(db: Db, owner: Account, code: unknown, rawFields: unknown, money: Money = demoMoney()): Promise<{ action: Action; prompt?: string } | string> {
+export async function buildAction(db: Db, owner: Account, code: unknown, rawFields: unknown, money: Money = demoMoney(), purchases?: Purchases): Promise<{ action: Action; prompt?: string } | string> {
   const f = readFields(rawFields);
   const fields: ActionField[] = [];
   const person = (label: string): Account | string => {
@@ -270,8 +285,13 @@ export async function buildAction(db: Db, owner: Account, code: unknown, rawFiel
       fields.push({ label: "Tag", value: owner.tag }, { label: "Address", value: owner.pubkey });
       break;
     }
+    case "BUY": {
+      // Paid in ETH to the treasury, so Ethereum mode only; the server quotes, caps and builds the transfer.
+      if (!purchases || money.mode !== "eth") return "Error: buying on Amazon is not available on this server. Tell the owner it cannot be done here.";
+      return purchases.propose(owner, f.get("item") ?? f.get("asin") ?? "");
+    }
     default:
-      return "Error: code must be PAY, CAL, FRQ, FAC or DEL.";
+      return "Error: code must be PAY, CAL, FRQ, FAC, DEL or BUY.";
   }
   return { action: { code, id: newActionId(), fields } };
 }
@@ -296,8 +316,10 @@ export function ownerTools(deps: {
   /** Sends a text (a link) to the owner right under the persona's reply. */
   attach: (text: string) => Promise<void>;
   money?: Money;
+  /** Buying on Amazon with ETH, where the server is set up for it. */
+  purchases?: Purchases;
 }): Tools {
-  const { db, approvals, owner, calendar } = deps;
+  const { db, approvals, owner, calendar, purchases } = deps;
   const money = deps.money ?? demoMoney();
   const meetings: MeetingDeps = { db, calendar, channel: deps.channel, log: deps.log, approvals, deliver: deps.deliver, onProposed: deps.onProposed };
   const settled = (line: string) => {
@@ -313,10 +335,16 @@ export function ownerTools(deps: {
     return target;
   };
   return {
-    specs: OWNER_TOOL_SPECS,
+    specs: purchases ? [...OWNER_TOOL_SPECS, ...PURCHASE_TOOL_SPECS] : OWNER_TOOL_SPECS,
     async run(name, args) {
       const me = db.account(owner.id)!;
       switch (name) {
+        case "search_amazon":
+          if (!purchases) return "Error: buying on Amazon is not available on this server.";
+          return purchases.search(String(args.query ?? ""));
+        case "list_purchases":
+          if (!purchases) return "Error: buying on Amazon is not available on this server.";
+          return JSON.stringify(purchases.list(me.id));
         case "get_balance":
           return `Balance: ${await money.balanceText(me)}`;
         case "list_friends":
@@ -434,7 +462,7 @@ export function ownerTools(deps: {
           return settled(`Ledger policy is now ${describePolicy(next)} Takes effect right away.`);
         }
         case "propose_action": {
-          const proposal = await buildAction(db, me, args.code, args.fields, money);
+          const proposal = await buildAction(db, me, args.code, args.fields, money, purchases);
           if (typeof proposal === "string") return proposal;
           const { action, prompt } = proposal;
           const guard = guardOf(action.code);
@@ -446,6 +474,7 @@ export function ownerTools(deps: {
             await approvals.request(me.id, action, { reason: "agent", ...(prompt ? { prompt } : {}), ...(deps.deliver ? { deliver: deps.deliver } : {}) });
           } catch (err) {
             if ((err as Error).message === PENDING_ERROR) {
+              if (action.code === "BUY") purchases?.cancel(action.id);
               const pending = db.pendingAction(me.id);
               const what = pending ? ` (${describeAction({ code: pending.code as Action["code"], id: pending.id, fields: pending.fields }, ACTION_TITLES)})` : "";
               return `Error: ${PENDING_ERROR}${what} on the owner's Ledger before proposing another action.`;

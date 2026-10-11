@@ -5,7 +5,7 @@
 import { describeAction, validateAction } from "./actions.js";
 import type { Calendar } from "./calendar/google.js";
 import { txLink } from "./chain.js";
-import type { Db } from "./db.js";
+import type { ActionStatus, Db } from "./db.js";
 import { execute, ExecutorError, field } from "./executors.js";
 import { demoMoney, type Money } from "./money.js";
 import { type Action, type ActionCode, ANY_DEVICE, type Channel, type DeviceManager, type SignResult } from "./types.js";
@@ -76,6 +76,8 @@ export function createApprovals(deps: {
   money?: Money;
   /** Mirrors executed CAL events to the owner's Google Calendar when they connected one. */
   calendar?: Pick<Calendar, "afterEvent">;
+  /** Hears how every action ended: executed (with the broadcast hash in Ethereum mode) or rejected, failed, expired. Purchases follow BUY from here. */
+  onSettled?: (action: Action, status: Exclude<ActionStatus, "pending" | "approved">, extra: { txHash?: string }) => void;
 }): Approvals {
   const { db, deviceManager, channel, titles, calendar } = deps;
   const money = deps.money ?? demoMoney();
@@ -147,6 +149,14 @@ export function createApprovals(deps: {
   function setStatus(j: Job, status: Parameters<Db["setActionStatus"]>[1], extra: { signature?: string; error?: string } = {}): void {
     db.setActionStatus(j.action.id, status, extra);
     log(`approval ${j.action.id.slice(0, 8)} ${j.action.code} -> ${status}${extra.error ? `: ${extra.error}` : ""}`);
+    if (status !== "pending" && status !== "approved") settled(j.action, status, {});
+  }
+  function settled(action: Action, status: Exclude<ActionStatus, "pending" | "approved">, extra: { txHash?: string }): void {
+    try {
+      deps.onSettled?.(action, status, extra);
+    } catch (err) {
+      log(`onSettled failed: ${(err as Error).stack ?? err}`);
+    }
   }
 
   /** Texts everyone who heard about a payment once Base includes it (or does not within 2 minutes). */
@@ -235,6 +245,7 @@ export function createApprovals(deps: {
     }
     log(`approval ${j.action.id.slice(0, 8)} ${j.action.code} -> executed`);
     note(j, "was approved on the device and executed.");
+    settled(j.action, "executed", { txHash });
     const proposer = j.accountId === null ? undefined : db.account(j.accountId);
     // The event is on AgentSign's calendar either way; Google is a mirror, so a failure there is only a line in the text.
     const googleLine = j.action.code === "CAL" && proposer && calendar ? await calendar.afterEvent(proposer.id) : undefined;
@@ -242,7 +253,8 @@ export function createApprovals(deps: {
       const extra = n.handle === j.handle && googleLine ? [googleLine] : [];
       await send(n.handle, [n.text, ...extra].join(" "));
     }
-    if (txHash) watchReceipt(j, txHash, outcome.notifications.map((n) => n.handle));
+    // A purchase follows its own payment (src/purchases.ts): the order text is its confirmation.
+    if (txHash && j.action.code !== "BUY") watchReceipt(j, txHash, outcome.notifications.map((n) => n.handle));
     return true;
   }
 

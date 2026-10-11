@@ -7,6 +7,7 @@ import { createApprovals, PENDING_ERROR, type Approvals } from "./approvals.js";
 import { createCalendar, type Calendar } from "./calendar/google.js";
 import type { Account, Db } from "./db.js";
 import { demoMoney, type Money } from "./money.js";
+import type { Purchases } from "./purchases.js";
 import { normalizeHandle, parseTag } from "./handles.js";
 import { answerMeeting } from "./meetings.js";
 import { executeDirectly, requiresLedger } from "./policy.js";
@@ -48,6 +49,8 @@ export interface AppOptions {
   money?: Money;
   /** The owners' calendars. Default: AgentSign's own events only (no Google). */
   calendar?: Calendar;
+  /** Buying on Amazon with ETH (src/purchases.ts). Default: not available. */
+  purchases?: Purchases;
 }
 
 /**
@@ -111,9 +114,15 @@ export function createApp(options: AppOptions): App & AppVoiceHooks & { approval
   const money = options.money ?? demoMoney();
   const app = money.appName;
   const calendar = options.calendar ?? createCalendar({ db, log });
-  const approvals = createApprovals({ db, deviceManager, channel, titles: ACTION_TITLES, log, signTimeoutMs: options.signTimeoutMs, money, calendar });
+  const purchases = options.purchases;
+  const approvals = createApprovals({
+    db, deviceManager, channel, titles: ACTION_TITLES, log, signTimeoutMs: options.signTimeoutMs, money, calendar,
+    onSettled: purchases ? (action, status, extra) => purchases.onSettled(action, status, extra) : undefined,
+  });
+  // Purchases a previous run left in flight continue now that approvals have expired their stale actions.
+  purchases?.resume();
   const personaModel = (options.personaModel ?? process.env.XAI_PERSONA_MODEL ?? DEFAULT_PERSONA_MODEL) || undefined;
-  const deps: AgentDeps = { db, model, approvals, channel, log, money, personaModel, calendar };
+  const deps: AgentDeps = { db, model, approvals, channel, log, money, personaModel, calendar, purchases };
   const createTitle = money.mode === "eth" ? "Verify address" : "Create account";
   const turns = new Map<string, Promise<void>>();
   /** Onboarding approvals in flight, by handle: the tag and device they claimed. */
@@ -398,6 +407,7 @@ export function createApp(options: AppOptions): App & AppVoiceHooks & { approval
     async whenIdle() {
       await Promise.all(turns.values());
       await approvals.whenIdle();
+      await purchases?.whenIdle();
     },
     async close() {
       await Promise.all(turns.values());

@@ -30,6 +30,7 @@ export function engineSystemPrompt(facts: string[], owner: Account): string {
     `- To meet a friend, call propose_meeting right away (no need to ask their agent first): their tag, a short title (what it is about, never their name), the window ${name} is open to, the length (30 minutes unless they said), and preferred when they named a time inside a wider window. Windows: an exact time ("at 9") is a slot of that length, 09:00 to 09:30; "around 9" is 08:30 to 10:00 with preferred 09:00; "morning" 09:00-12:00; "afternoon" 12:00-17:00; "evening" 17:00-21:00; "any time 9 to 5" or a day alone 09:00-17:00. Never use CAL for a meeting with a friend, and do not ask ${name} to pick a slot unless they asked to choose.`,
     `- When ${name} answers a meeting a friend is arranging with them (yes, no, or a different time; the facts above list them), call answer_meeting. If they name a new time for a meeting they offered themselves, answer_meeting with another time offers it.`,
     `- To send a friend a note (a thank you, a hello, a reply, anything ${name} wants to say to them), call send_note with the note written as ${name} would say it, a sentence or two. It reaches the friend at once as a text from their own Jarvis; nothing to approve. message_agent only asks when a friend is free and never passes anything on to them.`,
+    `- To buy something (only where the facts say Amazon is available): search_amazon first, pick the item that fits best within what ${name} said (cheapest match unless they said otherwise), then propose_action BUY with Item <its id>. The tool quotes the exact total and refuses anything over the limit; if it does, report the price and the limit, do not look for ways around it. Never buy more than one thing per request, and never without a search result's id.`,
     `- Use remember for lasting facts ${name} tells you.`,
     `- Only if ${name} clearly asks to delete, close or reset their account, propose DEL (no fields). Never for anything less. Their Ledger is the confirmation, so do not ask them to confirm first.`,
     "",
@@ -76,6 +77,7 @@ export function engineTools(deps: AgentDeps, owner: Account, hooks: EngineHooks 
     channel: deps.channel,
     log: deps.log,
     money: deps.money,
+    purchases: deps.purchases,
     deliver: hooks.deliver,
     attach: hooks.attach ?? (async (text) => void (await deps.channel.send(db.primaryHandle(owner.id)!, text))),
     onProposed: (action) => {
@@ -121,7 +123,7 @@ export async function runEngine(deps: AgentDeps, owner: Account, task: EngineTas
     ...(task.images.length ? { images: task.images } : {}),
   };
   return toolLoop(deps, {
-    system: engineSystemPrompt(ownerFacts(db, owner, balance, calendarOf(deps)), owner),
+    system: engineSystemPrompt(ownerFacts(db, owner, balance, calendarOf(deps), deps.purchases), owner),
     messages: [user],
     tools,
     maxSteps: MAX_STEPS,

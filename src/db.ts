@@ -115,6 +115,35 @@ export interface ActionRow {
   tx_hash: string | null;
 }
 
+/**
+ * One Amazon purchase paid in ETH (src/purchases.ts). proposed: quoted, waiting on the Ledger. cancelled: the Ledger
+ * said no or the quote lapsed, nothing paid. funded: the ETH transfer to the treasury is broadcast. ordering: the order
+ * is being placed (a checkpoint before the side effect; never re-run). ordered: Amazon took it. refunding/refunded:
+ * nothing was ordered and the ETH goes back. refund_failed and review: a person must look.
+ */
+export type PurchaseStatus = "proposed" | "cancelled" | "funded" | "ordering" | "ordered" | "refunding" | "refunded" | "refund_failed" | "review";
+export interface Purchase {
+  /** The BUY action that paid for it. */
+  action_id: string;
+  account_id: number;
+  asin: string;
+  title: string;
+  quote: string;
+  /** What the owner paid, in USD cents at the quote, and in wei at the spot price then. */
+  total_cents: number;
+  wei: string;
+  /** The treasury address the ETH went to, and the buyer's address a refund goes back to. */
+  treasury: string;
+  buyer: string;
+  status: PurchaseStatus;
+  fund_tx_hash: string | null;
+  order_id: string | null;
+  refund_tx_hash: string | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export type SigningJobStatus = "pending" | "signed" | "rejected" | "expired" | "superseded";
 /** A remote signing job: the link texted to the owner, opened on any computer their Ledger is plugged into. */
 export interface SigningJob {
@@ -171,6 +200,12 @@ create table if not exists signing_jobs (
   token text primary key, action_id text not null, pubkey text not null, action text not null,
   status text not null check (status in ('pending','signed','rejected','expired','superseded')),
   created_at text not null default (datetime('now')), expires_at text not null);
+create table if not exists purchases (
+  action_id text primary key, account_id integer not null, asin text not null, title text not null, quote text not null,
+  total_cents integer not null, wei text not null, treasury text not null, buyer text not null,
+  status text not null check (status in ('proposed','cancelled','funded','ordering','ordered','refunding','refunded','refund_failed','review')),
+  fund_tx_hash text, order_id text, refund_tx_hash text, error text,
+  created_at text not null default (datetime('now')), updated_at text not null default (datetime('now')));
 create table if not exists settings (key text primary key, value text not null);
 create table if not exists seen_inbound (
   id text primary key, handle text not null, at text not null default (datetime('now')));
@@ -410,6 +445,26 @@ export function openDb(path = "data/agentsign.db") {
     setSigningJobStatus: (token: string, status: SigningJobStatus) => run("update signing_jobs set status = ? where token = ?", status, token),
     /** On startup: nobody is waiting on a job from a previous run any more. */
     expireSigningJobs: () => run("update signing_jobs set status = 'expired' where status = 'pending'").changes,
+
+    // Amazon purchases paid in ETH (src/purchases.ts)
+    insertPurchase: (p: Pick<Purchase, "action_id" | "account_id" | "asin" | "title" | "quote" | "total_cents" | "wei" | "treasury" | "buyer">) =>
+      run(
+        "insert into purchases (action_id, account_id, asin, title, quote, total_cents, wei, treasury, buyer, status) values (?, ?, ?, ?, ?, ?, ?, ?, ?, 'proposed')",
+        p.action_id, p.account_id, p.asin, p.title, p.quote, p.total_cents, p.wei, p.treasury, p.buyer,
+      ),
+    purchase: (actionId: string) => one<Purchase>("select * from purchases where action_id = ?", actionId),
+    setPurchaseStatus(actionId: string, status: PurchaseStatus, extra: { fundTxHash?: string; orderId?: string; refundTxHash?: string; error?: string } = {}) {
+      run(
+        `update purchases set status = ?, fund_tx_hash = coalesce(?, fund_tx_hash), order_id = coalesce(?, order_id), refund_tx_hash = coalesce(?, refund_tx_hash),
+         error = coalesce(?, error), updated_at = ? where action_id = ?`,
+        status, extra.fundTxHash ?? null, extra.orderId ?? null, extra.refundTxHash ?? null, extra.error ?? null, new Date().toISOString(), actionId,
+      );
+    },
+    /** An account's purchases, newest first. */
+    purchases: (accountId: number, limit = 10) => all<Purchase>("select * from purchases where account_id = ? order by created_at desc limit ?", accountId, limit),
+    /** Every purchase in one of these states, oldest first (startup recovery). */
+    purchasesIn: (statuses: PurchaseStatus[]) =>
+      all<Purchase>(`select * from purchases where status in (${statuses.map(() => "?").join(",")}) order by created_at`, ...statuses),
 
     // settings (key/value; "voice_context" is the standing instruction for phone calls)
     setting: (key: string) => one<{ value: string }>("select value from settings where key = ?", key)?.value,

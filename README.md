@@ -246,13 +246,39 @@ After that:
 Refresh tokens live in the SQLite file next to everything else, so keep `DB_PATH` private.
 The scopes are `calendar.events` (read and write events) and `calendar.calendars.readonly` (to learn the primary calendar's address and time zone), nothing else.
 
+## Buying on Amazon
+
+Owners can buy small things on Amazon and pay in ETH: "buy me a pack of trident gum".
+Amazon takes cards, not ETH, so the operator (you) fronts it: the owner's ETH goes to a **treasury** wallet you control, and the server orders with your own Amazon account and the card saved there, at most `PURCHASE_LIMIT_USD` (default $20) per order, item, shipping and tax included.
+The treasury holds the ETH until Amazon confirms the order and sends it back automatically when nothing was ordered; anything unclear is flagged to you instead of retried.
+The design notes in `DESIGN.md` ("Buying on Amazon") spell out the state machine.
+
+Setup, Ethereum mode only:
+
+1. A treasury wallet on Base: `TREASURY_PRIVATE_KEY`.
+   Keep a little ETH on it for refund gas (a refund costs well under a cent on Base).
+   Buyers see its address on the Ledger and in the text.
+2. Your Amazon session: run `pnpm amazon:login` on your Mac.
+   It opens a Chromium window on Amazon's sign-in page; sign in (tick "Keep me signed in"), press Enter in the terminal, and it writes `data/amazon-state.json`, the browser's cookies.
+   That file is as sensitive as your Amazon password.
+   Point the server at it with `AMAZON_STORAGE_STATE_PATH=data/amazon-state.json`, or put its contents (or their base64) in `AMAZON_STORAGE_STATE`, which is how it travels to Fly: `fly secrets set AMAZON_STORAGE_STATE="$(base64 < data/amazon-state.json)" -a agentsign-jarvis`.
+   Make sure the account's default address and payment method are the ones you want used.
+3. Optional: `PURCHASE_LIMIT_USD` (default 20), `PURCHASE_SHIPS_TO` (what buyers are told, default "<operator>'s address"), `OPERATOR_TAG` and `OPERATOR_NAME` (you get a text when a purchase needs a person), `AMAZON_DRY_RUN=1` (everything up to the order button, then the buyer is refunded: use this for the first real run and read `data/amazon-shots/`).
+
+To try the flow without Amazon, set `AMAZON_MERCHANT=demo` with the dev channel: a built-in catalog, orders that never happen.
+
+How a purchase goes: the engine searches Amazon (`search_amazon`), picks the item that fits and proposes **Buy on Amazon** with the exact checkout total; the Ledger shows the ETH transfer to the treasury; once Base confirms it the server runs the checkout with **Buy Now** (never your cart), checks that exactly one item at the quoted total is on the page, and presses Place your order.
+The owner gets one text per step: the confirm prompt, "Paid ...", then "Ordered on Amazon ... Order 111-..." or "Amazon didn't take the order (...), your ETH is on its way back" with the basescan link.
+Amazon's checkout pages change and the driver was written from their known layouts, so do the first run with `AMAZON_DRY_RUN=1` and a signed-in session; `data/amazon-shots/` has a screenshot of every step that did not go as expected.
+The server runs headless Chromium for this, which is why the Fly machine has 1 GB.
+
 ## Deploy to Fly.io
 
 AgentSign runs as one small Fly.io machine, so nothing has to stay running on a Mac.
 The machine long-polls Telegram, serves the approval page and the voice/MCP routes at `https://<app>.fly.dev`, and keeps its SQLite database on a volume.
 No Ledger is ever plugged into it: every approval and every sign-up goes through the link in the text, opened in Chrome or Edge on any computer the Ledger is plugged into (see [Approve from anywhere](#approve-from-anywhere)).
 
-The pieces are `Dockerfile` (Node 22, the native modules built in a separate stage, runs as the unprivileged `node` user), `fly.toml` (app `agentsign-jarvis` in `sjc`, one `shared-cpu-1x` machine with 512 MB that never auto-stops, the `agentsign_data` volume on `/data`) and `scripts/fly-deploy.sh`.
+The pieces are `Dockerfile` (Node 22, the native modules built in a separate stage, runs as the unprivileged `node` user), `fly.toml` (app `agentsign-jarvis` in `sjc`, one `shared-cpu-1x` machine with 1 GB (headless Chromium for Amazon) that never auto-stops, the `agentsign_data` volume on `/data`) and `scripts/fly-deploy.sh`.
 
 1. Install flyctl (`brew install flyctl`) and log in:
 
@@ -397,6 +423,13 @@ Set them in `.env` (see `.env.example`) or in the shell.
 | `PUBLIC_URL` | `http://127.0.0.1:7788` | Base of the links in approval texts. Must be https (ngrok, `tailscale serve`) for other computers. |
 | `WEB_HOST` | `127.0.0.1` | Interface the approval page listens on. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | none | OAuth web client that lets owners connect their Google Calendar (eth mode). Redirect URI: `PUBLIC_URL/google/callback`. See "Google Calendar". |
+| `TREASURY_PRIVATE_KEY` | none | Turns on buying on Amazon (eth mode): the wallet that receives buyers' ETH and refunds them. See "Buying on Amazon". |
+| `AMAZON_STORAGE_STATE`, `AMAZON_STORAGE_STATE_PATH` | none | Your Amazon session from `pnpm amazon:login`, as JSON or base64, or a path to the file. |
+| `AMAZON_MERCHANT` | `browser` with a session | `browser` (amazon.com through Chromium) or `demo` (a built-in catalog, nothing is ordered). |
+| `AMAZON_DRY_RUN` | unset | `1`: run the checkout but never press Place your order; the buyer is refunded. |
+| `PURCHASE_LIMIT_USD` | `20` | Cap on one order's checkout total, item plus shipping and tax. |
+| `PURCHASE_SHIPS_TO` | `<operator>'s address` | Where orders go, in words, as told to buyers. |
+| `OPERATOR_TAG`, `OPERATOR_NAME` | none | The operator's tag (texted when a purchase needs a person) and first name as used in texts. |
 | `DB_PATH` | `data/agentsign.db` | SQLite file. |
 
 ## Dev channel HTTP API

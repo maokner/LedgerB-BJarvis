@@ -5,7 +5,7 @@ app = "agentsign-jarvis"
 primary_region = "sjc"
 kill_signal = "SIGTERM"
 kill_timeout = "10s"
-# A little swap so the startup esbuild bundle of the approval page never trips the OOM killer on 512 MB.
+# A little swap so the startup esbuild bundle of the approval page or a heavy Amazon page never trips the OOM killer.
 swap_size_mb = 512
 
 [build]
@@ -48,4 +48,5 @@ swap_size_mb = 512
 
 [[vm]]
   size = "shared-cpu-1x"
-  memory = "512mb"
+  # Headless Chromium (the Amazon driver, src/amazon/browser.ts) runs beside Node and needs a few hundred MB of its own.
+  memory = "1024mb"

@@ -53,6 +53,23 @@ ADMIN_TOKEN="$(env_get ADMIN_TOKEN "$ENV_FILE")"
 VOICE_WEBHOOK_SECRET="$(env_get VOICE_WEBHOOK_SECRET "$ENV_FILE")"
 GOOGLE_CLIENT_ID="$(env_get GOOGLE_CLIENT_ID "$ENV_FILE")"
 GOOGLE_CLIENT_SECRET="$(env_get GOOGLE_CLIENT_SECRET "$ENV_FILE")"
+TREASURY_PRIVATE_KEY="$(env_get TREASURY_PRIVATE_KEY "$ENV_FILE")"
+AMAZON_STORAGE_STATE="$(env_get AMAZON_STORAGE_STATE "$ENV_FILE")"
+AMAZON_STORAGE_STATE_PATH="$(env_get AMAZON_STORAGE_STATE_PATH "$ENV_FILE")"
+AMAZON_MERCHANT="$(env_get AMAZON_MERCHANT "$ENV_FILE")"
+AMAZON_DRY_RUN="$(env_get AMAZON_DRY_RUN "$ENV_FILE")"
+PURCHASE_LIMIT_USD="$(env_get PURCHASE_LIMIT_USD "$ENV_FILE")"
+PURCHASE_SHIPS_TO="$(env_get PURCHASE_SHIPS_TO "$ENV_FILE")"
+OPERATOR_TAG="$(env_get OPERATOR_TAG "$ENV_FILE")"
+OPERATOR_NAME="$(env_get OPERATOR_NAME "$ENV_FILE")"
+# The Amazon session travels as base64 of the exported file (see "Buying on Amazon" in README.md); a local path is read here.
+if [ -z "$AMAZON_STORAGE_STATE" ] && [ -n "$AMAZON_STORAGE_STATE_PATH" ]; then
+  [ -f "$AMAZON_STORAGE_STATE_PATH" ] || die "AMAZON_STORAGE_STATE_PATH points to $AMAZON_STORAGE_STATE_PATH, which does not exist (run: pnpm amazon:login)"
+  AMAZON_STORAGE_STATE="$(base64 < "$AMAZON_STORAGE_STATE_PATH" | tr -d '\n')"
+fi
+if [ -n "$TREASURY_PRIVATE_KEY" ] && [ -z "$AMAZON_STORAGE_STATE" ] && [ "$AMAZON_MERCHANT" != demo ]; then
+  die "TREASURY_PRIVATE_KEY is set but there is no Amazon session: run pnpm amazon:login and set AMAZON_STORAGE_STATE_PATH, or AMAZON_MERCHANT=demo"
+fi
 PUBLIC_URL="https://${APP}.fly.dev"
 
 missing=()
@@ -116,6 +133,12 @@ names=(XAI_API_KEY TELEGRAM_BOT_TOKEN TELEGRAM_BOT_USERNAME MCP_TOKEN PUBLIC_URL
 [ -n "$VOICE_WEBHOOK_SECRET" ] && names+=(VOICE_WEBHOOK_SECRET)
 # Google Calendar: the OAuth client's redirect URI must be $PUBLIC_URL/google/callback (see "Google Calendar" in README.md).
 [ -n "$GOOGLE_CLIENT_ID" ] && names+=(GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET)
+# Buying on Amazon (optional): the treasury key, the session, and the knobs that are set.
+[ -n "$TREASURY_PRIVATE_KEY" ] && names+=(TREASURY_PRIVATE_KEY)
+[ -n "$AMAZON_STORAGE_STATE" ] && names+=(AMAZON_STORAGE_STATE)
+for name in AMAZON_MERCHANT AMAZON_DRY_RUN PURCHASE_LIMIT_USD PURCHASE_SHIPS_TO OPERATOR_TAG OPERATOR_NAME; do
+  [ -n "${!name}" ] && names+=("$name")
+done
 # Values go through stdin, never argv or the terminal. --stage: the deploy below picks them up.
 for name in "${names[@]}"; do printf '%s=%s\n' "$name" "${!name}"; done | fly secrets import -a "$APP" --stage >/dev/null
 echo "staged: ${names[*]}"

@@ -1,5 +1,6 @@
 /** Entry point: env, DB, devices, channel, model, app. */
 import { config } from "dotenv";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createModel, DEFAULT_MODEL } from "./agent/xai.js";
@@ -9,7 +10,11 @@ import { createDevChannel, createIMessageChannel, createTelegramChannel } from "
 import { openDb } from "./db.js";
 import { createBaseChain } from "./chain.js";
 import { combineDeviceManagers, createDeviceManager, createEthDeviceManager, createRemoteDeviceManager, parseDevicesEnv } from "./device/index.js";
-import { baseMoney, demoMoney } from "./money.js";
+import { createAmazonMerchant } from "./amazon/browser.js";
+import { demoMerchant, type Merchant } from "./merchant.js";
+import { baseMoney, demoMoney, formatEth } from "./money.js";
+import { createPurchases, type Purchases } from "./purchases.js";
+import { createTreasury } from "./treasury.js";
 import type { Channel } from "./types.js";
 import { startWebServer, type WebServer } from "./web/server.js";
 import { setupVoice } from "./voice/index.js";
@@ -94,7 +99,8 @@ else {
   process.exit(1);
 }
 const model = createModel({ apiKey, model: process.env.XAI_MODEL || DEFAULT_MODEL, baseUrl: process.env.XAI_BASE_URL });
-const app = createApp({ db, deviceManager, channel, model, log, money, calendar });
+const purchases = await setupPurchases();
+const app = createApp({ db, deviceManager, channel, model, log, money, calendar, purchases });
 if (web) voiceRoutes = setupVoice({ app, apiKey, publicUrl, dev: channelName === "dev", log });
 else log("voice: phone calls and MCP need the web server (DEVICE_MODE=eth)");
 
@@ -106,6 +112,78 @@ try {
 }
 log(`AgentSign listening on ${channel.name} (mode ${mode}, model ${process.env.XAI_MODEL || DEFAULT_MODEL}, devices ${process.env.DEVICES ?? "hid"})`);
 
+/**
+ * Buying on Amazon with ETH (src/purchases.ts): on when TREASURY_PRIVATE_KEY is set in Ethereum mode. The store is the
+ * operator's own Amazon account through a browser (AMAZON_STORAGE_STATE, see "Buying on Amazon" in README.md), or a
+ * built-in demo catalog (AMAZON_MERCHANT=demo) to try the flow without touching Amazon.
+ */
+async function setupPurchases(): Promise<Purchases | undefined> {
+  const key = process.env.TREASURY_PRIVATE_KEY?.trim();
+  const kind = process.env.AMAZON_MERCHANT?.trim() || (process.env.AMAZON_STORAGE_STATE || process.env.AMAZON_STORAGE_STATE_PATH ? "browser" : "");
+  if (!key && !kind) {
+    log("amazon: off (set TREASURY_PRIVATE_KEY and AMAZON_STORAGE_STATE to let owners buy things)");
+    return undefined;
+  }
+  if (mode !== "eth") {
+    log("amazon: needs DEVICE_MODE=eth (buyers pay the treasury in ETH), so it is off");
+    return undefined;
+  }
+  if (!key || !kind) {
+    console.error(`Buying on Amazon needs both TREASURY_PRIVATE_KEY and an Amazon session (AMAZON_STORAGE_STATE, or AMAZON_MERCHANT=demo). See "Buying on Amazon" in README.md.`);
+    process.exit(1);
+  }
+  const limitUsd = Number(process.env.PURCHASE_LIMIT_USD || 20);
+  if (!(limitUsd > 0 && limitUsd <= 100)) {
+    console.error(`PURCHASE_LIMIT_USD must be a dollar amount between 0 and 100, not "${process.env.PURCHASE_LIMIT_USD}".`);
+    process.exit(1);
+  }
+  const limitCents = Math.round(limitUsd * 100);
+  const chain = createBaseChain({ rpcUrl: process.env.BASE_RPC_URL });
+  let treasury;
+  try {
+    treasury = createTreasury(key, chain);
+  } catch (err) {
+    console.error((err as Error).message);
+    process.exit(1);
+  }
+  let merchant: Merchant & { warm?(): Promise<void> };
+  if (kind === "demo") merchant = demoMerchant();
+  else if (kind === "browser") {
+    let state = process.env.AMAZON_STORAGE_STATE?.trim() ?? "";
+    const path = process.env.AMAZON_STORAGE_STATE_PATH?.trim();
+    if (!state && path) state = readFileSync(path, "utf8");
+    // The secret may be the JSON itself or base64 of it (fly secrets are easier to set that way).
+    if (state && !state.startsWith("{")) state = Buffer.from(state, "base64").toString("utf8");
+    try {
+      merchant = createAmazonMerchant({ storageState: state, limitCents, dryRun: /^(1|true|yes)$/i.test(process.env.AMAZON_DRY_RUN ?? ""), log: (line) => log(`[amazon] ${line}`) });
+    } catch (err) {
+      console.error(`AMAZON_STORAGE_STATE is not a usable Amazon session: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  } else {
+    console.error(`Unknown AMAZON_MERCHANT "${kind}". Use browser or demo.`);
+    process.exit(1);
+  }
+  const operatorTag = process.env.OPERATOR_TAG?.trim().toLowerCase();
+  const operatorName = process.env.OPERATOR_NAME?.trim() || (operatorTag ? operatorTag.replace(/^@/, "").replace(/^./, (c) => c.toUpperCase()) : "the operator");
+  const purchases = createPurchases({
+    db,
+    merchant,
+    treasury,
+    money,
+    channel: { send: (handle, text) => channel.send(handle, text) },
+    limitCents,
+    shipsTo: process.env.PURCHASE_SHIPS_TO?.trim() || `${operatorName}'s address`,
+    operator: { name: operatorName, handle: () => (operatorTag ? db.primaryHandle(db.accountByTag(operatorTag.startsWith("@") ? operatorTag : `@${operatorTag}`)?.id ?? -1) : undefined) },
+    log,
+  });
+  log(`amazon: on (${kind}${process.env.AMAZON_DRY_RUN ? ", dry run" : ""}), limit $${limitUsd.toFixed(2)} per order, treasury ${treasury.address}, ships to ${purchases.shipsTo}`);
+  treasury.balanceWei().then((wei) => log(`amazon: treasury holds ${formatEth(wei)} ETH for refunds and gas`), (err: unknown) => log(`amazon: could not read the treasury balance: ${(err as Error).message}`));
+  // A browser session that is signed out shows up in the log at start, not at the first purchase.
+  merchant.warm?.().then(() => log("amazon: session ready"), (err: unknown) => log(`amazon: WARNING ${(err as Error).message}`));
+  return purchases;
+}
+
 let stopping = false;
 async function shutdown(): Promise<void> {
   log("stopping (signal received)");
@@ -114,6 +192,7 @@ async function shutdown(): Promise<void> {
   log("shutting down");
   await channel.stop().catch((err) => log(`channel stop: ${(err as Error).message}`));
   await app.close();
+  await purchases?.close().catch((err: unknown) => log(`amazon stop: ${(err as Error).message}`));
   await deviceManager.close().catch((err: unknown) => log(`device stop: ${(err as Error).message}`));
   await web?.close();
   db.close();

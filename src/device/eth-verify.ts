@@ -4,27 +4,27 @@
  */
 import { Transaction, verifyMessage } from "ethers";
 import { actionMessage } from "../actions.js";
-import type { Action } from "../types.js";
+import { type Action, isTxCode } from "../types.js";
 import { type EthAnswer, type EthRequest, unsignedTx } from "./eth-tx.js";
 
 /**
- * What the device must do for `action`. PAY signs action.meta; CAL, FRQ, FAC sign actionMessage().
+ * What the device must do for `action`. PAY and BUY sign action.meta; CAL, FRQ, FAC sign actionMessage().
  * ACC over USB is "Verify address"; on the page it signs actionMessage() too, since the page's answer must prove the key.
  */
 export function ethRequest(action: Action, via: "usb" | "page" = "usb"): EthRequest {
   if (action.code === "ACC" && via === "usb") return { kind: "address" };
-  if (action.code === "PAY") {
-    if (!action.meta) throw new Error("PAY without transaction data");
+  if (isTxCode(action.code)) {
+    if (!action.meta) throw new Error(`${action.code} without transaction data`);
     return { kind: "tx", meta: action.meta };
   }
   return { kind: "message", message: actionMessage(action) };
 }
 
-/** True when `signature` proves `address` approved exactly `action` ("verified" or a message signature for ACC, raw tx for PAY, else a message signature). */
+/** True when `signature` proves `address` approved exactly `action` ("verified" or a message signature for ACC, raw tx for PAY and BUY, else a message signature). */
 export function verifyEthSignature(address: string, action: Action, signature: string): boolean {
   try {
     if (action.code === "ACC" && signature === "verified") return true;
-    if (action.code === "PAY") {
+    if (isTxCode(action.code)) {
       if (!action.meta) return false;
       const tx = Transaction.from(signature);
       return tx.from?.toLowerCase() === address && tx.unsignedHash === unsignedTx(action.meta).unsignedHash;

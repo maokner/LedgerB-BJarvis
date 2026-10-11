@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# AgentSign server image (Fly.io): Telegram channel, eth device mode, approval page on 7788.
+# AgentSign server image (Fly.io): Telegram channel, eth device mode, approval page on 7788, headless Chromium for Amazon.
 # The Ledger is never attached to this machine; it signs through the approval page (WebHID) in a browser.
 
 FROM node:22-bookworm-slim AS base
@@ -28,6 +28,17 @@ ENV NODE_ENV=production \
 COPY --chmod=755 docker/sips /usr/local/bin/sips
 COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/agentsign-entrypoint
 COPY --from=deps /app/node_modules ./node_modules
+# Chromium for the Amazon driver (src/amazon/browser.ts), installed by Playwright's own installer at the exact build the
+# playwright package expects, plus the shared libraries and fonts it loads (--with-deps, as root at build time).
+# This beats basing the stage on mcr.microsoft.com/playwright: that image also carries Firefox and WebKit (about 2 GB)
+# and another Node, while this adds only Chromium to the same slim Debian. --no-shell skips the separate headless
+# shell, because the driver runs full Chromium in its new headless mode (channel "chromium").
+# Browsers live in /ms-playwright, outside any home directory, so the unprivileged node user finds the same path.
+# No sandbox flags here: Playwright launches Chromium with --no-sandbox unless told otherwise, which a container
+# without user namespaces needs; the container itself is the boundary.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN node node_modules/playwright/cli.js install --with-deps --no-shell chromium \
+ && rm -rf /var/lib/apt/lists/*
 COPY package.json pnpm-lock.yaml tsconfig.json ./
 COPY src ./src
 COPY scripts ./scripts

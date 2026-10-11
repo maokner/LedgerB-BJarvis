@@ -9,7 +9,7 @@ import type { Chain } from "./chain.js";
 import type { Account } from "./db.js";
 import { verifyEthSignature } from "./device/eth.js";
 import { formatCents, parseCents } from "./format.js";
-import { ACTION_TITLES, type Action, type ActionField } from "./types.js";
+import { ACTION_TITLES, type Action, type ActionField, type EthTxMeta, isTxCode } from "./types.js";
 
 export interface PayProposal {
   action: Action;
@@ -26,10 +26,15 @@ export interface Money {
   balanceText(account: Account): Promise<string>;
   /** A PAY the owner can sign, or an "Error: ..." the model can act on. `to` is an account or a raw 0x address. */
   pay(owner: Account, to: Account | string, amount: string, memo?: string): Promise<PayProposal | string>;
+  /**
+   * eth: a transfer of `cents` worth of ETH from the owner to `address`, ready to become an action's meta, or an
+   * "Error: ..." (insufficient funds). Used by purchases (BUY pays the treasury). agentsign: always an error.
+   */
+  transfer(owner: Account, address: string, cents: number): Promise<{ wei: bigint; eth: string; meta: EthTxMeta } | string>;
   verify(pubkey: string, action: Action, signature: string): boolean;
   /** The text after an account is created. */
   accountCreatedText(tag: string, pubkey: string): Promise<string>;
-  /** eth: broadcasts a signed PAY and returns the hash. agentsign: nothing to do. */
+  /** eth: broadcasts a signed PAY or BUY and returns the hash. agentsign: nothing to do. */
   submit(action: Action, signature: string): Promise<string | undefined>;
   confirm(hash: string): Promise<"confirmed" | "failed" | "timeout">;
 }
@@ -54,6 +59,7 @@ export function demoMoney(): Money {
       const action: Action = { code: "PAY", id: newActionId(), fields };
       return { action, prompt: prompt(action) };
     },
+    transfer: async () => "Error: in demo mode there is no ETH to transfer.",
     verify: verifyActionSignature,
     async accountCreatedText(tag) {
       const [pay, friend] = ["@gabriel", "@yadu", "@matt"].filter((t) => t !== tag);
@@ -83,6 +89,25 @@ export function baseMoney(chain: Chain): Money {
     const [wei, usd] = await Promise.all([chain.balanceWei(address), chain.ethUsdPrice()]);
     return `${formatEth(wei)} ETH (${formatCents(Math.round((Number(formatEther(wei)) * usd) * 100))})`;
   };
+  /** Fees and nonce for a transfer, checked against the balance; the meta the Ethereum app signs. */
+  const plan = async (owner: Account, address: string, wei: bigint): Promise<{ wei: bigint; eth: string; meta: EthTxMeta } | string> => {
+    const p = await chain.prepareTransfer(owner.pubkey, address, wei);
+    const have = await chain.balanceWei(owner.pubkey);
+    const need = wei + p.gasLimit * p.maxFeePerGas;
+    if (need > have) {
+      return `Error: insufficient funds on Base. The balance is ${await balance(owner.pubkey)}; this needs ${formatEth(need, 8)} ETH including the network fee. Tell the owner; do not propose it.`;
+    }
+    const meta: EthTxMeta = {
+      to: address,
+      valueWei: wei.toString(),
+      chainId: p.chainId,
+      nonce: p.nonce,
+      gasLimit: p.gasLimit.toString(),
+      maxFeePerGas: p.maxFeePerGas.toString(),
+      maxPriorityFeePerGas: p.maxPriorityFeePerGas.toString(),
+    };
+    return { wei, eth: formatEth(wei, 18), meta };
+  };
   return {
     mode: "eth",
     appName: "the Ethereum app",
@@ -103,14 +128,9 @@ export function baseMoney(chain: Chain): Money {
         cents = parsed;
         wei = usdToWei(cents, usdPerEth);
       }
-      if (wei <= 0n) return "Error: that amount is too small to send.";
-      const plan = await chain.prepareTransfer(owner.pubkey, address, wei);
-      const have = await chain.balanceWei(owner.pubkey);
-      const need = wei + plan.gasLimit * plan.maxFeePerGas;
-      if (need > have) {
-        return `Error: insufficient funds on Base. The balance is ${await balance(owner.pubkey)}; this needs ${formatEth(need, 8)} ETH including the network fee. Tell the owner; do not propose it.`;
-      }
-      const eth = formatEth(wei, 18);
+      const planned = await plan(owner, address, wei);
+      if (typeof planned === "string") return planned;
+      const { eth, meta } = planned;
       const toTag = typeof to === "string" ? undefined : to.tag;
       const fields: ActionField[] = [
         { label: "To", value: toTag ?? address },
@@ -119,17 +139,13 @@ export function baseMoney(chain: Chain): Money {
         ...(toTag ? [{ label: "Address", value: address }] : []),
         ...(memo ? [{ label: "Memo", value: toFieldText(memo) }] : []),
       ];
-      const meta = {
-        to: address,
-        valueWei: wei.toString(),
-        chainId: plan.chainId,
-        nonce: plan.nonce,
-        gasLimit: plan.gasLimit.toString(),
-        maxFeePerGas: plan.maxFeePerGas.toString(),
-        maxPriorityFeePerGas: plan.maxPriorityFeePerGas.toString(),
-      };
       const action: Action = { code: "PAY", id: newActionId(), fields, meta };
       return { action, prompt: `Please confirm on your Ledger: Send ${eth} ETH (${formatCents(cents)}) to ${toTag ? `${toTag} ` : ""}${address}` };
+    },
+    async transfer(owner, address, cents) {
+      const wei = usdToWei(cents, await chain.ethUsdPrice());
+      if (wei <= 0n) return "Error: that amount is too small to send.";
+      return plan(owner, getAddress(address), wei);
     },
     verify: verifyEthSignature,
     async accountCreatedText(tag, address) {
@@ -140,7 +156,7 @@ export function baseMoney(chain: Chain): Money {
         return `You're in: ${tag} is bound to ${shown} on Base.`;
       }
     },
-    submit: async (action, signature) => (action.code === "PAY" ? chain.broadcast(signature) : undefined),
+    submit: async (action, signature) => (isTxCode(action.code) ? chain.broadcast(signature) : undefined),
     confirm: (hash) => chain.waitForReceipt(hash, 120_000),
   };
 }

@@ -22,7 +22,7 @@ export const MAX_LABEL_BYTES = 16;
 export const MAX_VALUE_BYTES = 64;
 export const MAX_ACTION_BYTES = 24 + MAX_FIELDS * (1 + MAX_LABEL_BYTES + 1 + MAX_VALUE_BYTES);
 
-const CODES: readonly ActionCode[] = ["PAY", "CAL", "FRQ", "FAC", "ACC", "DEL"];
+const CODES: readonly ActionCode[] = ["PAY", "CAL", "FRQ", "FAC", "ACC", "DEL", "BUY"];
 const PRINTABLE_ASCII = /^[\x20-\x7E]+$/;
 
 export class ActionFormatError extends Error {}

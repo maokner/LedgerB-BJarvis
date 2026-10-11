@@ -3,6 +3,7 @@ import type { Approvals } from "../approvals.js";
 import { describeAction } from "../actions.js";
 import { createCalendar, type Calendar } from "../calendar/google.js";
 import type { Money } from "../money.js";
+import { purchasesFact, type Purchases } from "../purchases.js";
 import type { Account, Db } from "../db.js";
 import { formatDay, localNow, TIMEZONE } from "../format.js";
 import { meetingFacts } from "../meetings.js";
@@ -23,6 +24,8 @@ export interface AgentDeps {
   personaModel?: string;
   /** The owners' calendars (AgentSign's own events plus Google once connected). Unset: AgentSign's own events only. */
   calendar?: Calendar;
+  /** Buying on Amazon with ETH (src/purchases.ts). Unset: not available. */
+  purchases?: Purchases;
 }
 
 /** The calendar behind these deps; without one, AgentSign's own events table alone. */
@@ -45,7 +48,7 @@ export function claimsProposal(text: string): boolean {
 }
 
 /** What both the persona and the engine know about the owner at the start of a turn, as prompt lines. */
-export function ownerFacts(db: Db, owner: Account, balance: string, calendar?: Calendar): string[] {
+export function ownerFacts(db: Db, owner: Account, balance: string, calendar?: Calendar, purchases?: Purchases): string[] {
   const friends = db.friendsOf(owner.id);
   const google = calendar?.connection(owner.id);
   const googleLine = !calendar
@@ -72,6 +75,7 @@ export function ownerFacts(db: Db, owner: Account, balance: string, calendar?: C
     ...meetingFacts(db, owner),
     `Ledger policy, ${describePolicy(policyOf(owner))} ${owner.tag} can change it by asking (set_ledger_policy): a preset (relaxed, standard, strict) or one thing at a time.`,
     googleLine,
+    purchasesFact(purchases, owner),
     notes.length ? `Notes saved about ${owner.tag}:\n${notes.join("\n")}` : "",
   ].filter(Boolean);
 }
