@@ -37,8 +37,8 @@ The page speaks to the Ledger through WebHID in Chrome, shows the same action an
 
 Amazon: the owner pays USDC to a treasury address, and the server buys the item with the Amazon account and card of the operator.
 The limit is $20 for each order.
-The deployed build uses a mock store (real search and prices, each order confirmed, no purchase) and a treasury with no key.
-The browser driver for real purchases and the refund path are available with `AMAZON_MERCHANT=browser` and `TREASURY_PRIVATE_KEY`.
+The deployed build uses a treasury with no key on the server.
+The refund path is available with `TREASURY_PRIVATE_KEY`.
 
 ## Codebase
 
