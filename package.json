@@ -1,0 +1,39 @@
+{
+  "name": "agentsign",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "An iMessage agent whose risky actions are clear-signed on a Ledger device.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx src/index.ts --channel dev",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@ledgerhq/hw-transport-node-hid": "^6.29.5",
+    "@photon-ai/imessage-kit": "3.0.0",
+    "better-sqlite3": "^12.5.0",
+    "dotenv": "^17.2.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.6.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "node-hid",
+      "usb",
+      "@ledgerhq/hw-transport-node-hid",
+      "esbuild"
+    ]
+  }
+}
