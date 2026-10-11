@@ -1,4 +1,4 @@
-# AgentSign on Fly.io. Deploy with scripts/fly-deploy.sh (see "Deploy to Fly.io" in README.md).
+# AgentSign on Fly.io. Deploy with scripts/fly-deploy.sh (see "Run it" in README.md).
 # Exactly one machine: it long-polls Telegram (one poller per bot token) and owns the SQLite volume.
 
 app = "agentsign-jarvis"
@@ -24,7 +24,7 @@ swap_size_mb = 512
   BASE_RPC_URL = "https://mainnet.base.org"
   XAI_MODEL = "grok-4.3"
   # Buying on Amazon: owners pay this treasury (receive only: no key on the server), and every order is confirmed
-  # without buying anything (AMAZON_MERCHANT=mock, real search and prices). See "Buying on Amazon" in README.md.
+  # without buying anything (AMAZON_MERCHANT=mock, real search and prices). See "Buying on Amazon" in DESIGN.md.
   TREASURY_ADDRESS = "0xf8381484CD2639618c690572aB35ff65E4bd7C5e"
   AMAZON_MERCHANT = "mock"
   PURCHASE_LIMIT_USD = "20"

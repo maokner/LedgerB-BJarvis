@@ -59,7 +59,7 @@ let voiceRoutes: Routes | undefined;
 const googleClientId = process.env.GOOGLE_CLIENT_ID?.trim();
 const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim();
 if ((googleClientId || googleClientSecret) && !(googleClientId && googleClientSecret)) {
-  console.error("GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET go together. See \"Google Calendar\" in README.md.");
+  console.error("GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET go together. See the Google Calendar section in DESIGN.md.");
   process.exit(1);
 }
 if (googleClientId && !remote) log("google calendar: needs the web server (DEVICE_MODE=eth), so it is off");
@@ -114,7 +114,7 @@ log(`AgentSign listening on ${channel.name} (mode ${mode}, model ${process.env.X
 
 /**
  * Buying on Amazon with ETH (src/purchases.ts): on when TREASURY_PRIVATE_KEY is set in Ethereum mode. The store is the
- * operator's own Amazon account through a browser (AMAZON_STORAGE_STATE, see "Buying on Amazon" in README.md), or a
+ * operator's own Amazon account through a browser (AMAZON_STORAGE_STATE, see "Buying on Amazon" in DESIGN.md), or a
  * built-in demo catalog (AMAZON_MERCHANT=demo) to try the flow without touching Amazon.
  */
 async function setupPurchases(): Promise<Purchases | undefined> {
@@ -130,7 +130,7 @@ async function setupPurchases(): Promise<Purchases | undefined> {
     return undefined;
   }
   if (!(key || address) || !kind) {
-    console.error(`Buying on Amazon needs a treasury (TREASURY_ADDRESS or TREASURY_PRIVATE_KEY) and a store (AMAZON_MERCHANT=mock or demo, or an Amazon session in AMAZON_STORAGE_STATE). See "Buying on Amazon" in README.md.`);
+    console.error(`Buying on Amazon needs a treasury (TREASURY_ADDRESS or TREASURY_PRIVATE_KEY) and a store (AMAZON_MERCHANT=mock or demo, or an Amazon session in AMAZON_STORAGE_STATE). See "Buying on Amazon" in DESIGN.md.`);
     process.exit(1);
   }
   const limitUsd = Number(process.env.PURCHASE_LIMIT_USD || 20);

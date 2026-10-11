@@ -62,7 +62,7 @@ PURCHASE_LIMIT_USD="$(env_get PURCHASE_LIMIT_USD "$ENV_FILE")"
 PURCHASE_SHIPS_TO="$(env_get PURCHASE_SHIPS_TO "$ENV_FILE")"
 OPERATOR_TAG="$(env_get OPERATOR_TAG "$ENV_FILE")"
 OPERATOR_NAME="$(env_get OPERATOR_NAME "$ENV_FILE")"
-# The Amazon session travels as base64 of the exported file (see "Buying on Amazon" in README.md); a local path is read here.
+# The Amazon session travels as base64 of the exported file (see "Buying on Amazon" in DESIGN.md); a local path is read here.
 if [ -z "$AMAZON_STORAGE_STATE" ] && [ -n "$AMAZON_STORAGE_STATE_PATH" ]; then
   [ -f "$AMAZON_STORAGE_STATE_PATH" ] || die "AMAZON_STORAGE_STATE_PATH points to $AMAZON_STORAGE_STATE_PATH, which does not exist (run: pnpm amazon:login)"
   AMAZON_STORAGE_STATE="$(base64 < "$AMAZON_STORAGE_STATE_PATH" | tr -d '\n')"
@@ -131,7 +131,7 @@ fi
 step "Secrets"
 names=(XAI_API_KEY TELEGRAM_BOT_TOKEN TELEGRAM_BOT_USERNAME MCP_TOKEN PUBLIC_URL ADMIN_TOKEN)
 [ -n "$VOICE_WEBHOOK_SECRET" ] && names+=(VOICE_WEBHOOK_SECRET)
-# Google Calendar: the OAuth client's redirect URI must be $PUBLIC_URL/google/callback (see "Google Calendar" in README.md).
+# Google Calendar: the OAuth client's redirect URI must be $PUBLIC_URL/google/callback (see the Google Calendar section in DESIGN.md).
 [ -n "$GOOGLE_CLIENT_ID" ] && names+=(GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET)
 # Buying on Amazon (optional): the treasury key, the session, and the knobs that are set.
 [ -n "$TREASURY_PRIVATE_KEY" ] && names+=(TREASURY_PRIVATE_KEY)

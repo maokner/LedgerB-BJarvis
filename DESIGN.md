@@ -56,7 +56,7 @@ Source layout (TypeScript, ESM, Node 22+, `tsx` to run, `vitest` to test, `bette
 | `src/calendar/` | app agent | the owners' calendars: AgentSign's table plus Google Calendar (OAuth link, merged reads, mirroring approved events) |
 | `src/index.ts` | app agent | entry: env, DB, device manager, channel, app |
 | `src/channels/` | channel agent | Telegram bot channel; local HTTP + REPL channel; the older iMessage (Photon) channel |
-| `README.md` | channel agent | how to run the whole thing, permissions, demo script |
+| `README.md` | channel agent | what it is, how the Ledger plays into it, how to run it |
 
 ## Actions and clear signing
 
