@@ -10,6 +10,7 @@ import { openDb } from "../src/db.js";
 import type { Calendar } from "../src/calendar/google.js";
 import type { Money } from "../src/money.js";
 import { createPhoneLinks, type PhoneLinks } from "../src/phone.js";
+import type { Food } from "../src/food/food.js";
 import type { Purchases } from "../src/purchases.js";
 import type { Action, Channel, DeviceInfo, DeviceManager, InboundMessage, SignResult } from "../src/types.js";
 
@@ -135,6 +136,8 @@ export function harness(
     calendar?: Calendar;
     /** Buying on Amazon, built on the harness's own DB and channel. */
     purchases?: (ctx: { db: ReturnType<typeof openDb>; channel: Pick<Channel, "send">; log: (line: string) => void }) => Purchases;
+    /** Ordering food, built on the harness's own DB and channel. */
+    food?: (ctx: { db: ReturnType<typeof openDb>; channel: Pick<Channel, "send">; log: (line: string) => void }) => Food;
     /** Phone calls: true for links on the harness's DB with this number to call, or ready-made links. */
     phone?: boolean | string | PhoneLinks;
   } = {},
@@ -156,6 +159,7 @@ export function harness(
     money: extra.money,
     calendar: extra.calendar,
     purchases: extra.purchases?.({ db, channel: ch.channel, log }),
+    food: extra.food?.({ db, channel: ch.channel, log }),
     phone,
   });
   const deliver = async (message: InboundMessage) => {

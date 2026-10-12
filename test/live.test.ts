@@ -8,7 +8,12 @@ import { describe, expect, it } from "vitest";
 import { createModel, DEFAULT_MODEL, type Model } from "../src/agent/xai.js";
 import { addMinutes, localNow } from "../src/format.js";
 import { policyOf, requiresLedger } from "../src/policy.js";
-import { harness, isEngine, isPersona, PHONES, tgInbound } from "./helpers.js";
+import { parseEther, Wallet } from "ethers";
+import { demoDoorDash } from "../src/food/demo.js";
+import { createFood } from "../src/food/food.js";
+import { baseMoney } from "../src/money.js";
+import { createTreasury } from "../src/treasury.js";
+import { fakeEthDevices, harness, isEngine, isPersona, PHONES, stubChain, tgInbound } from "./helpers.js";
 import { receiptPng } from "./receipt.js";
 
 config({ path: join(homedir(), ".grok", ".env"), quiet: true });
@@ -210,5 +215,36 @@ describe.skipIf(!apiKey)(`live xAI (${modelName})`, () => {
     await h.deliver(tgInbound(7002, "hey! can I be yadu?"));
     console.log(`choose_tag turn: ${timed.take()}; texts: ${JSON.stringify(h.to("tg:7002"))}`);
     expect(h.devices[1]!.shown.at(-1)?.fields).toEqual([{ label: "Tag", value: "@yadu" }, { label: "Telegram", value: "id 7002" }]);
+  });
+
+  it("orders food: asks for the address, quotes from the demo DoorDash, puts EAT on the Ledger, and the order follows the payment", { timeout: 180_000 }, async () => {
+    const timed = timedModel();
+    const owner = new Wallet(Wallet.createRandom().privateKey);
+    const vault = new Wallet(Wallet.createRandom().privateKey);
+    const { chain, sent } = stubChain({ [owner.address.toLowerCase()]: parseEther("0.05") }, 4000, { [owner.address.toLowerCase()]: 50_000_000n });
+    const money = baseMoney(chain);
+    const provider = demoDoorDash();
+    const h = harness(0, timed.model, {
+      money,
+      deviceManager: fakeEthDevices([owner]).manager,
+      food: (ctx) => createFood({ ...ctx, provider, treasury: createTreasury({ privateKey: vault.privateKey }, chain), money, operator: { name: "Matt" } }),
+    });
+    await h.send(PHONES.matt, "@matt");
+    const account = h.db.accountByTag("@matt")!;
+    const errors = () => h.logs.filter((l) => /error|failed/i.test(l)).join("\n");
+
+    await h.send(PHONES.matt, "hey can you deliver me food");
+    console.log(`food ask: ${timed.take()}; reply: ${JSON.stringify(h.to(PHONES.matt).at(-1))}`);
+    expect(sent).toHaveLength(0);
+    expect(h.to(PHONES.matt).at(-1)).toMatch(/address|where/i);
+
+    await h.send(PHONES.matt, "1 Market St Apt 5, San Francisco, CA 94105. a burrito bowl and two chips from chipotle");
+    console.log(`food order: ${timed.take()}; texts: ${JSON.stringify(h.to(PHONES.matt).slice(-3))}`);
+    expect(h.db.account(account.id)!.delivery_address, errors()).toMatch(/^1 Market St/);
+    const order = h.db.purchases(account.id, 10, "EAT")[0];
+    expect(order, errors()).toMatchObject({ status: "ordered" });
+    expect(order!.title).toBe("Chipotle Mexican Grill: 1x Burrito Bowl, 2x Chips");
+    expect(sent).toHaveLength(1);
+    expect(h.to(PHONES.matt).at(-1)).toMatch(/^Order placed on DoorDash: Chipotle Mexican Grill, 1x Burrito Bowl, 2x Chips\. .* It arrives at 1 Market St.* in about 25 minutes\.$/);
   });
 });

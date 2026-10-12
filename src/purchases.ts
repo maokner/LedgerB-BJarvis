@@ -1,29 +1,83 @@
 /**
- * Buying on Amazon with ETH: the buyer pays the operator's treasury on Base (a BUY action their Ledger signs), the
- * server then orders the item with the operator's own Amazon account and card, and the treasury refunds the buyer
- * when nothing was ordered. The treasury is the escrow: it holds the ETH from the Ledger's signature to Amazon's
- * order confirmation, and only a definite "nothing ordered" sends it back.
+ * Buying through the operator's treasury: the buyer pays the treasury in USDC on Base (an action their Ledger signs),
+ * the server then orders with the operator's own account and card, and the treasury refunds the buyer when nothing was
+ * ordered. The treasury is the escrow: it holds the USDC from the Ledger's signature to the store's order confirmation,
+ * and only a definite "nothing ordered" sends it back.
  *
- *   search -> propose (quote the exact total, cap it, build the transfer) -> Ledger -> funded (tx broadcast)
+ * One state machine for every store, one instance each: Amazon items (BUY, src/amazon/) and DoorDash food (EAT,
+ * src/food/). A PurchaseWording carries what differs: the action code, the id the model passes, the Ledger's fields
+ * and the texts. Each instance only reads and writes the purchase rows of its own code.
+ *
+ *   quote -> propose (the exact total, capped, the transfer) -> Ledger -> funded (tx broadcast)
  *   -> Base confirms -> ordering (checkpoint) -> ordered | no purchase -> refunding -> refunded
  *
- * Rules the code enforces, whatever the model asks for: the total (item, shipping, tax) never exceeds the limit; the
- * card is charged only after the buyer's ETH is confirmed on Base; a refund goes out only on a definite no-purchase;
- * "ordering" is written before the order is placed and is never re-run, so a crash cannot order twice.
+ * Rules the code enforces, whatever the model asks for: the total (with shipping, fees, tax, tip) never exceeds the
+ * limit; the card is charged only after the buyer's payment is confirmed on Base; a refund goes out only on a definite
+ * no-purchase; "ordering" is written before the order is placed and is never re-run, so a crash cannot order twice.
  */
 import { newActionId, toFieldText } from "./actions.js";
 import { formatUsdc, txLink } from "./chain.js";
 import type { Account, Db, Purchase, PurchaseStatus } from "./db.js";
 import { formatCents } from "./format.js";
-import { type Merchant, MerchantError, type Quote, shortTitle } from "./merchant.js";
+import { type Merchant, MerchantError, type Outcome, type Quote, shortTitle } from "./merchant.js";
 import { formatEth, type Money } from "./money.js";
 import type { Treasury } from "./treasury.js";
 import type { ActionStatus } from "./db.js";
-import type { Action, Channel } from "./types.js";
+import type { Action, ActionField, Channel, PurchaseCode } from "./types.js";
 
 export const DEFAULT_LIMIT_CENTS = 2_000;
 /** How long the funding transaction may take on Base before a person has to look. */
 const RECEIPT_TRIES = 3;
+
+/** What differs between stores: the action code, the id the model passes, what the Ledger and the texts say. */
+export interface PurchaseWording {
+  /** The action the Ledger signs. */
+  code: PurchaseCode;
+  /** How the owner's history names one: "Amazon purchase", "DoorDash order". */
+  noun: string;
+  /** How much of the title the history notes and the operator's texts keep. Default 48. */
+  titleLength?: number;
+  /** propose()'s argument as the id merchant.prepare() takes, or an "Error: ..." line for the model. */
+  id(raw: string): { id: string } | { error: string };
+  /** The model's error for a total over the limit (`limit` is formatted, "$20.00"). */
+  overLimit(quote: Quote, limit: string): string;
+  /** Every field the Ledger shows, ending with Total, USDC and To. */
+  fields(quote: Quote, usdc: string, treasury: string): ActionField[];
+  /** The "Please confirm on your Ledger: ..." text. `refunds`: the treasury can send the USDC back from this server. */
+  prompt(quote: Quote, usdc: string, treasury: string, refunds: boolean): string;
+  /** The owner's text once the store took the order; `paid` reads "4.35 USDC ($4.35)". */
+  ordered(quote: Quote, outcome: Extract<Outcome, { status: "ordered" }>, paid: string): string;
+  /** The owner-facts line: what can be bought here and how. */
+  fact(owner: Account, terms: { limit: string; treasury: string; refunds: boolean }): string;
+}
+
+const BUYABLE_ASIN = /^[A-Z0-9]{10}$/;
+
+/** Amazon: one unit of one item by its ASIN, shipped to the operator's address. */
+export function amazonWording(store: string, shipsTo: string): PurchaseWording {
+  const item = (quote: Quote) => toFieldText(shortTitle(quote.title, 48));
+  return {
+    code: "BUY",
+    noun: `${store} purchase`,
+    id(raw) {
+      const asin = raw.trim().toUpperCase();
+      return BUYABLE_ASIN.test(asin) ? { id: asin } : { error: `Error: Item must be the 10-character item id from search_${store.toLowerCase()}, like B0DEMO0001.` };
+    },
+    overLimit: (quote, limit) =>
+      `Error: ${shortTitle(quote.title, 60)} costs ${formatCents(quote.totalCents)} all in (item ${formatCents(quote.itemCents)} plus shipping and tax), over the ${limit} limit. Tell the owner; do not propose it.`,
+    fields: (quote, usdc, treasury) => [
+      { label: "Item", value: item(quote) },
+      { label: "Total", value: formatCents(quote.totalCents) },
+      { label: "USDC", value: usdc },
+      { label: "To", value: treasury },
+    ],
+    prompt: (quote, usdc, treasury, refunds) =>
+      `Please confirm on your Ledger: Buy on ${store}: ${item(quote)}, ${formatCents(quote.totalCents)} all in. That is ${usdc} USDC to the AgentSign treasury ${treasury}; it ships to ${shipsTo}${refunds ? ", and comes back to you if the order doesn't go through" : ""}.`,
+    ordered: (quote, outcome, paid) => `Order confirmed on ${store}: ${shortTitle(quote.title, 80)}. Order ${outcome.orderId}, paid ${paid}. It ships to ${shipsTo}.`,
+    fact: (owner, t) =>
+      `${store}: ${owner.tag} can buy things there through you, up to ${t.limit} per order all in, paid in USDC on Base from their address (plus a little ETH for the fee) to the treasury ${t.treasury}, shipped to ${shipsTo}.${t.refunds ? " The USDC comes back if the order does not go through." : ""}`,
+  };
+}
 
 export interface PurchasesOptions {
   db: Db;
@@ -34,43 +88,49 @@ export interface PurchasesOptions {
   channel: Pick<Channel, "send">;
   /** Per-order cap on the checkout total. Default $20.00. */
   limitCents?: number;
-  /** Where Amazon ships (the operator's default address), in words: "Matt's address". */
+  /** Where Amazon ships (the operator's default address), in words: "Matt's address". Only for the default wording. */
   shipsTo?: string;
+  /** The store's code and texts. Default: Amazon (BUY), shipped to `shipsTo`. */
+  wording?: PurchaseWording;
   /** The operator, texted when a purchase needs a person (an uncertain order, a failed refund). The handle is looked up when needed. */
   operator?: { name: string; handle?: () => string | undefined };
   log?: (line: string) => void;
 }
 
 export interface Purchases {
+  /** The action this instance follows: BUY or EAT. */
+  readonly code: PurchaseCode;
   readonly store: string;
   readonly limitCents: number;
-  readonly shipsTo: string;
   readonly treasuryAddress: string;
   /** Whether the treasury can send a buyer's money back from this server. */
   readonly refunds: boolean;
   /** Products for the model, as JSON, or an "Error: ..." line. */
   search(query: string, limit?: number): Promise<string>;
-  /** The BUY action for one unit of `asin` (quote, cap, ETH transfer to the treasury), or an "Error: ..." line for the model. */
-  propose(owner: Account, asin: string): Promise<{ action: Action; prompt: string } | string>;
+  /** The action for what `id` names (an ASIN, a food quote id): quote, cap, USDC transfer to the treasury. Or an "Error: ..." line for the model. */
+  propose(owner: Account, id: string): Promise<{ action: Action; prompt: string } | string>;
   /** A proposal that never reached the Ledger (another action was pending). */
   cancel(actionId: string): void;
-  /** Approvals hook: the BUY was executed (ETH broadcast) or ended otherwise. Work continues in the background. */
+  /** Approvals hook: the action was executed (payment broadcast) or ended otherwise. Other codes are ignored. Work continues in the background. */
   onSettled(action: Action, status: ActionStatus, extra: { txHash?: string }): void;
-  /** The owner's purchases for the model. */
+  /** The owner's purchases at this store for the model. */
   list(accountId: number): Record<string, unknown>[];
+  /** The owner-facts line. */
+  fact(owner: Account): string;
   /** Picks up purchases a previous run left in flight. Call once at startup. */
   resume(): void;
   whenIdle(): Promise<void>;
   close(): Promise<void>;
 }
 
-const BUYABLE_ASIN = /^[A-Z0-9]{10}$/;
-
 export function createPurchases(o: PurchasesOptions): Purchases {
   const { db, merchant, treasury, money, channel } = o;
   const limitCents = o.limitCents ?? DEFAULT_LIMIT_CENTS;
   const operator = o.operator ?? { name: "the operator" };
   const shipsTo = o.shipsTo ?? `${operator.name}'s address`;
+  const wording = o.wording ?? amazonWording(merchant.name, shipsTo);
+  const { code } = wording;
+  const short = (title: string) => shortTitle(title, wording.titleLength);
   const log = o.log ?? (() => {});
   let queue: Promise<void> = Promise.resolve();
   const enqueue = (work: () => Promise<void>) => {
@@ -84,7 +144,7 @@ export function createPurchases(o: PurchasesOptions): Purchases {
   const ownerHandle = (p: Purchase) => db.primaryHandle(p.account_id);
   /** A note in the owner's chat history so the next agent turn can answer "did it go through?". */
   const note = (p: Purchase, text: string) => {
-    if (db.account(p.account_id)) db.addMessage(p.account_id, "system", { role: "system", content: `Amazon purchase ${shortTitle(p.title)} (${formatCents(p.total_cents)}): ${text}` });
+    if (db.account(p.account_id)) db.addMessage(p.account_id, "system", { role: "system", content: `${wording.noun} ${short(p.title)} (${formatCents(p.total_cents)}): ${text}` });
   };
   const set = (p: Purchase, status: PurchaseStatus, extra: Parameters<Db["setPurchaseStatus"]>[2] = {}) => {
     db.setPurchaseStatus(p.action_id, status, extra);
@@ -100,10 +160,10 @@ export function createPurchases(o: PurchasesOptions): Purchases {
     note(p, `${status === "review" ? "needs a look" : "the refund failed"}: ${why}`);
     await send(ownerHandle(p), ownerText);
     const owner = db.account(p.account_id);
-    await send(operator.handle?.(), `Purchase ${p.action_id.slice(0, 8)} for ${owner?.tag ?? "a deleted account"} needs you: ${why}. Item ${shortTitle(p.title)}, paid ${paid(p)}${p.fund_tx_hash ? ` (${txLink(p.fund_tx_hash)})` : ""}.`);
+    await send(operator.handle?.(), `Purchase ${p.action_id.slice(0, 8)} for ${owner?.tag ?? "a deleted account"} needs you: ${why}. Item ${short(p.title)}, paid ${paid(p)}${p.fund_tx_hash ? ` (${txLink(p.fund_tx_hash)})` : ""}.`);
   }
 
-  /** Nothing was ordered: the ETH goes back to the buyer, gas on the treasury. */
+  /** Nothing was ordered: the money goes back to the buyer, gas on the treasury. */
   async function refund(p: Purchase, reason: string): Promise<void> {
     set(p, "refunding", { error: reason });
     let hash: string;
@@ -111,16 +171,16 @@ export function createPurchases(o: PurchasesOptions): Purchases {
       hash = await treasury.refund(p.buyer, BigInt(p.wei), p.asset);
     } catch (err) {
       const why = `refund of ${paid(p)} to ${p.buyer} failed: ${(err as Error).message}`;
-      return escalate(p, "refund_failed", why, `Amazon didn't take the order (${reason}), so nothing was charged, but I couldn't send your ${paid(p)} back automatically. ${operator.name} will sort it out.`);
+      return escalate(p, "refund_failed", why, `${merchant.name} didn't take the order (${reason}), so nothing was charged, but I couldn't send your ${paid(p)} back automatically. ${operator.name} will sort it out.`);
     }
     set(p, "refunded", { refundTxHash: hash });
     note(p, `nothing was ordered (${reason}); refunded ${paid(p)}, tx ${hash}.`);
-    await send(ownerHandle(p), `Amazon didn't take the order (${reason}), so nothing was charged. Your ${paid(p)} is on its way back: ${txLink(hash)}`);
+    await send(ownerHandle(p), `${merchant.name} didn't take the order (${reason}), so nothing was charged. Your ${paid(p)} is on its way back: ${txLink(hash)}`);
   }
 
-  /** From the broadcast of the buyer's ETH to the order (or the refund). Safe to run again after a restart. */
+  /** From the broadcast of the buyer's payment to the order (or the refund). Safe to run again after a restart. */
   async function settleFunded(p: Purchase): Promise<void> {
-    if (!p.fund_tx_hash) return escalate(p, "review", "funded without a transaction hash", `Something went wrong on my side with your Amazon order. ${operator.name} is looking at it.`);
+    if (!p.fund_tx_hash) return escalate(p, "review", "funded without a transaction hash", `Something went wrong on my side with your ${merchant.name} order. ${operator.name} is looking at it.`);
     let receipt: Awaited<ReturnType<Money["confirm"]>> = "timeout";
     for (let i = 0; i < RECEIPT_TRIES && receipt === "timeout"; i++) receipt = await money.confirm(p.fund_tx_hash);
     log(`purchase ${p.action_id.slice(0, 8)} funding ${p.fund_tx_hash} ${receipt}`);
@@ -144,17 +204,17 @@ export function createPurchases(o: PurchasesOptions): Purchases {
     }
     if (outcome.status === "ordered") {
       set(p, "ordered", { orderId: outcome.orderId });
-      note(p, `ordered on ${merchant.name}, order ${outcome.orderId}.`);
-      return send(ownerHandle(p), `Order confirmed on ${merchant.name}: ${shortTitle(p.title, 80)}. Order ${outcome.orderId}, paid ${paid(p)}. It ships to ${shipsTo}.`);
+      note(p, `ordered on ${merchant.name}, order ${outcome.orderId}${outcome.etaMinutes ? `, arriving in about ${outcome.etaMinutes} minutes` : ""}.`);
+      return send(ownerHandle(p), wording.ordered(quote, outcome, paid(p)));
     }
     if (outcome.status === "no_purchase") return refund(p, outcome.reason);
     return escalate(p, "review", outcome.reason, `I couldn't tell whether ${merchant.name} took the order (${outcome.reason}). Nothing more is charged; ${operator.name} is checking and you'll hear back.`);
   }
 
   return {
+    code,
     store: merchant.name,
     limitCents,
-    shipsTo,
     treasuryAddress: treasury.address,
     refunds: treasury.canRefund,
 
@@ -178,38 +238,24 @@ export function createPurchases(o: PurchasesOptions): Purchases {
       });
     },
 
-    async propose(owner, rawAsin) {
-      const asin = rawAsin.trim().toUpperCase();
-      if (!BUYABLE_ASIN.test(asin)) return `Error: Item must be the 10-character item id from search_${merchant.name.toLowerCase()}, like B0DEMO0001.`;
+    async propose(owner, raw) {
+      const parsed = wording.id(raw);
+      if ("error" in parsed) return parsed.error;
       let quote: Quote;
       try {
-        quote = await merchant.prepare(asin);
+        quote = await merchant.prepare(parsed.id);
       } catch (err) {
         if (err instanceof MerchantError) return `Error: ${err.message} Tell the owner; do not propose it.`;
-        log(`prepare ${asin} failed: ${(err as Error).stack ?? err}`);
-        return `Error: ${merchant.name} could not quote that item right now. Tell the owner to try again later.`;
+        log(`prepare ${parsed.id} failed: ${(err as Error).stack ?? err}`);
+        return `Error: ${merchant.name} could not quote that right now. Tell the owner to try again later.`;
       }
-      if (quote.totalCents > limitCents) {
-        return `Error: ${shortTitle(quote.title, 60)} costs ${formatCents(quote.totalCents)} all in (item ${formatCents(quote.itemCents)} plus shipping and tax), over the ${formatCents(limitCents)} limit. Tell the owner; do not propose it.`;
-      }
+      // The cap on the exact total, here at prepare; the stores check it again at confirm.
+      if (quote.totalCents > limitCents) return wording.overLimit(quote, formatCents(limitCents));
       const transfer = await money.transferUsdc(owner, treasury.address, quote.totalCents);
       if (typeof transfer === "string") return transfer;
-      const item = toFieldText(shortTitle(quote.title, 48));
-      const action: Action = {
-        code: "BUY",
-        id: newActionId(),
-        fields: [
-          { label: "Item", value: item },
-          { label: "Total", value: formatCents(quote.totalCents) },
-          { label: "USDC", value: transfer.usdc },
-          { label: "To", value: treasury.address },
-        ],
-        meta: transfer.meta,
-      };
-      db.insertPurchase({ action_id: action.id, account_id: owner.id, asin, title: quote.title, quote: JSON.stringify(quote), total_cents: quote.totalCents, wei: transfer.units.toString(), asset: "USDC", treasury: treasury.address, buyer: owner.pubkey });
-      const back = treasury.canRefund ? ", and comes back to you if the order doesn't go through" : "";
-      const prompt = `Please confirm on your Ledger: Buy on ${merchant.name}: ${item}, ${formatCents(quote.totalCents)} all in. That is ${transfer.usdc} USDC to the AgentSign treasury ${treasury.address}; it ships to ${shipsTo}${back}.`;
-      return { action, prompt };
+      const action: Action = { code, id: newActionId(), fields: wording.fields(quote, transfer.usdc, treasury.address), meta: transfer.meta };
+      db.insertPurchase({ action_id: action.id, code, account_id: owner.id, asin: parsed.id, title: quote.title, quote: JSON.stringify(quote), total_cents: quote.totalCents, wei: transfer.units.toString(), asset: "USDC", treasury: treasury.address, buyer: owner.pubkey });
+      return { action, prompt: wording.prompt(quote, transfer.usdc, treasury.address, treasury.canRefund) };
     },
 
     cancel(actionId) {
@@ -218,7 +264,7 @@ export function createPurchases(o: PurchasesOptions): Purchases {
     },
 
     onSettled(action, status, extra) {
-      if (action.code !== "BUY") return;
+      if (action.code !== code) return;
       const p = db.purchase(action.id);
       if (!p || p.status !== "proposed") return;
       if (status !== "executed") {
@@ -226,7 +272,7 @@ export function createPurchases(o: PurchasesOptions): Purchases {
         return;
       }
       if (!extra.txHash) {
-        enqueue(() => escalate(p, "review", "executed without a transaction hash", `Something went wrong on my side with your Amazon order. ${operator.name} is looking at it.`));
+        enqueue(() => escalate(p, "review", "executed without a transaction hash", `Something went wrong on my side with your ${merchant.name} order. ${operator.name} is looking at it.`));
         return;
       }
       set(p, "funded", { fundTxHash: extra.txHash });
@@ -234,7 +280,8 @@ export function createPurchases(o: PurchasesOptions): Purchases {
     },
 
     list(accountId) {
-      return db.purchases(accountId).map((p) => ({
+      return db.purchases(accountId, 10, code).map((p) => ({
+        store: merchant.name,
         item: p.title,
         total: formatCents(p.total_cents),
         paid: amount(p),
@@ -247,15 +294,17 @@ export function createPurchases(o: PurchasesOptions): Purchases {
       }));
     },
 
+    fact: (owner) => wording.fact(owner, { limit: formatCents(limitCents), treasury: treasury.address, refunds: treasury.canRefund }),
+
     resume() {
       // The approvals layer expired every action a previous run left pending, so these proposals went nowhere.
-      for (const p of db.purchasesIn(["proposed"])) set(p, "cancelled", { error: "server restarted" });
+      for (const p of db.purchasesIn(["proposed"], code)) set(p, "cancelled", { error: "server restarted" });
       // Funded: the receipt check and the ordering checkpoint make this safe to run again.
-      for (const p of db.purchasesIn(["funded"])) enqueue(() => settleFunded(p));
+      for (const p of db.purchasesIn(["funded"], code)) enqueue(() => settleFunded(p));
       // Mid-order or mid-refund when the process died: the side effect may or may not have happened. Never redo it.
-      for (const p of db.purchasesIn(["ordering", "refunding"])) {
+      for (const p of db.purchasesIn(["ordering", "refunding"], code)) {
         const what = p.status === "ordering" ? "the order" : "the refund";
-        enqueue(() => escalate(p, "review", `the server restarted while ${what} was in progress`, `I lost track of your Amazon order while restarting. ${operator.name} is checking whether it went through; you'll hear back.`));
+        enqueue(() => escalate(p, "review", `the server restarted while ${what} was in progress`, `I lost track of your ${merchant.name} order while restarting. ${operator.name} is checking whether it went through; you'll hear back.`));
       }
     },
 
@@ -270,8 +319,12 @@ export function createPurchases(o: PurchasesOptions): Purchases {
   };
 }
 
-/** The line in the owner facts: what buying can do here. */
-export function purchasesFact(purchases: Purchases | undefined, owner: Account): string {
-  if (!purchases) return "Amazon: not available on this server, so nothing can be bought.";
-  return `${purchases.store}: ${owner.tag} can buy things there through you, up to ${formatCents(purchases.limitCents)} per order all in, paid in USDC on Base from their address (plus a little ETH for the fee) to the treasury ${purchases.treasuryAddress}, shipped to ${purchases.shipsTo}.${purchases.refunds ? " The USDC comes back if the order does not go through." : ""}`;
+const UNAVAILABLE: Record<PurchaseCode, string> = {
+  BUY: "Amazon: not available on this server, so nothing can be bought.",
+  EAT: "DoorDash: not available on this server, so no food can be ordered.",
+};
+
+/** The line in the owner facts: what buying on Amazon (BUY) or ordering food (EAT) can do here. */
+export function purchasesFact(purchases: Pick<Purchases, "fact"> | undefined, owner: Account, code: PurchaseCode = "BUY"): string {
+  return purchases ? purchases.fact(owner) : UNAVAILABLE[code];
 }

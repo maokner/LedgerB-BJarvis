@@ -16,6 +16,8 @@ export interface Account {
   display_name: string | null;
   /** What needs this owner's Ledger, as JSON (src/policy.ts); null is the default preset. */
   policy: string | null;
+  /** Where food orders go (src/food/), as the owner gave it; null until they do. */
+  delivery_address: string | null;
 }
 export interface Friend {
   id: number;
@@ -116,16 +118,19 @@ export interface ActionRow {
 }
 
 /**
- * One Amazon purchase paid in ETH (src/purchases.ts). proposed: quoted, waiting on the Ledger. cancelled: the Ledger
+ * One purchase paid to the treasury (src/purchases.ts): an Amazon item (BUY) or a DoorDash food order (EAT). proposed: quoted, waiting on the Ledger. cancelled: the Ledger
  * said no or the quote lapsed, nothing paid. funded: the ETH transfer to the treasury is broadcast. ordering: the order
  * is being placed (a checkpoint before the side effect; never re-run). ordered: Amazon took it. refunding/refunded:
  * nothing was ordered and the ETH goes back. refund_failed and review: a person must look.
  */
 export type PurchaseStatus = "proposed" | "cancelled" | "funded" | "ordering" | "ordered" | "refunding" | "refunded" | "refund_failed" | "review";
 export interface Purchase {
-  /** The BUY action that paid for it. */
+  /** The BUY or EAT action that paid for it. */
   action_id: string;
+  /** Which store runs it: BUY Amazon, EAT food. Each Purchases instance only touches its own rows. */
+  code: "BUY" | "EAT";
   account_id: number;
+  /** The store's id for what was bought: the ASIN, or the food quote id (src/food/food.ts). */
   asin: string;
   title: string;
   quote: string;
@@ -238,6 +243,9 @@ export function openDb(path = "data/agentsign.db") {
   if (!columns("purchases").includes("asset")) db.exec("alter table purchases add column asset text not null default 'ETH'");
   // Databases created before the Ledger policy lack accounts.policy.
   if (!columns("accounts").includes("policy")) db.exec("alter table accounts add column policy text");
+  // Databases created before food orders lack purchases.code (every older row is an Amazon BUY) and the delivery address.
+  if (!columns("purchases").includes("code")) db.exec("alter table purchases add column code text not null default 'BUY'");
+  if (!columns("accounts").includes("delivery_address")) db.exec("alter table accounts add column delivery_address text");
 
   const one = <T>(sql: string, ...args: unknown[]) => db.prepare(sql).get(...args) as T | undefined;
   const all = <T>(sql: string, ...args: unknown[]) => db.prepare(sql).all(...args) as T[];
@@ -269,6 +277,7 @@ export function openDb(path = "data/agentsign.db") {
       run("update accounts set username = ?, display_name = ? where id = ?", username?.replace(/^@/, "").toLowerCase() || null, displayName || null, accountId),
     accounts: () => all<Account>("select * from accounts order by id"),
     setPolicy: (accountId: number, policy: string | null) => run("update accounts set policy = ? where id = ?", policy, accountId),
+    setDeliveryAddress: (accountId: number, address: string | null) => run("update accounts set delivery_address = ? where id = ?", address, accountId),
     primaryHandle: (accountId: number) =>
       one<{ handle: string }>("select handle from handles where account_id = ? order by is_primary desc, rowid limit 1", accountId)?.handle,
     /** Every handle of an account, the primary one first (the Telegram id, then linked phone numbers). */
@@ -455,11 +464,11 @@ export function openDb(path = "data/agentsign.db") {
     /** On startup: nobody is waiting on a job from a previous run any more. */
     expireSigningJobs: () => run("update signing_jobs set status = 'expired' where status = 'pending'").changes,
 
-    // Amazon purchases paid in ETH (src/purchases.ts)
-    insertPurchase: (p: Pick<Purchase, "action_id" | "account_id" | "asin" | "title" | "quote" | "total_cents" | "wei" | "asset" | "treasury" | "buyer">) =>
+    // Purchases paid to the treasury: Amazon (BUY) and food (EAT) (src/purchases.ts)
+    insertPurchase: (p: Pick<Purchase, "action_id" | "account_id" | "asin" | "title" | "quote" | "total_cents" | "wei" | "asset" | "treasury" | "buyer"> & { code?: Purchase["code"] }) =>
       run(
-        "insert into purchases (action_id, account_id, asin, title, quote, total_cents, wei, asset, treasury, buyer, status) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'proposed')",
-        p.action_id, p.account_id, p.asin, p.title, p.quote, p.total_cents, p.wei, p.asset, p.treasury, p.buyer,
+        "insert into purchases (action_id, code, account_id, asin, title, quote, total_cents, wei, asset, treasury, buyer, status) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'proposed')",
+        p.action_id, p.code ?? "BUY", p.account_id, p.asin, p.title, p.quote, p.total_cents, p.wei, p.asset, p.treasury, p.buyer,
       ),
     purchase: (actionId: string) => one<Purchase>("select * from purchases where action_id = ?", actionId),
     setPurchaseStatus(actionId: string, status: PurchaseStatus, extra: { fundTxHash?: string; orderId?: string; refundTxHash?: string; error?: string } = {}) {
@@ -469,11 +478,12 @@ export function openDb(path = "data/agentsign.db") {
         status, extra.fundTxHash ?? null, extra.orderId ?? null, extra.refundTxHash ?? null, extra.error ?? null, new Date().toISOString(), actionId,
       );
     },
-    /** An account's purchases, newest first. */
-    purchases: (accountId: number, limit = 10) => all<Purchase>("select * from purchases where account_id = ? order by created_at desc limit ?", accountId, limit),
-    /** Every purchase in one of these states, oldest first (startup recovery). */
-    purchasesIn: (statuses: PurchaseStatus[]) =>
-      all<Purchase>(`select * from purchases where status in (${statuses.map(() => "?").join(",")}) order by created_at`, ...statuses),
+    /** An account's purchases, newest first; with `code`, one store's only. */
+    purchases: (accountId: number, limit = 10, code?: Purchase["code"]) =>
+      all<Purchase>(`select * from purchases where account_id = ?${code ? " and code = ?" : ""} order by created_at desc limit ?`, accountId, ...(code ? [code] : []), limit),
+    /** Every purchase in one of these states, oldest first (startup recovery); with `code`, one store's only. */
+    purchasesIn: (statuses: PurchaseStatus[], code?: Purchase["code"]) =>
+      all<Purchase>(`select * from purchases where status in (${statuses.map(() => "?").join(",")})${code ? " and code = ?" : ""} order by created_at`, ...statuses, ...(code ? [code] : [])),
 
     // settings (key/value; "voice_context" is the standing instruction for phone calls)
     setting: (key: string) => one<{ value: string }>("select value from settings where key = ?", key)?.value,

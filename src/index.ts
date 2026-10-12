@@ -15,7 +15,12 @@ import { alwaysOrderedMerchant, demoMerchant, type Merchant } from "./merchant.j
 import { baseMoney, demoMoney, formatEth } from "./money.js";
 import { createPhoneLinks, PHONE_RE, type PhoneLinks } from "./phone.js";
 import { createPurchases, type Purchases } from "./purchases.js";
-import { createTreasury } from "./treasury.js";
+import { createDoorDashProvider } from "./food/browser.js";
+import { createDoorDashCli } from "./food/cli.js";
+import { demoDoorDash } from "./food/demo.js";
+import { createFood, type Food } from "./food/food.js";
+import type { FoodProvider } from "./food/provider.js";
+import { createTreasury, type Treasury } from "./treasury.js";
 import type { Channel } from "./types.js";
 import { startWebServer, type WebServer } from "./web/server.js";
 import { setupVoice, type VoiceSetup } from "./voice/index.js";
@@ -120,9 +125,13 @@ else if (channelName === "photon") {
   process.exit(1);
 }
 const model = createModel({ apiKey, model: process.env.XAI_MODEL || DEFAULT_MODEL, baseUrl: process.env.XAI_BASE_URL });
+// Set up once by commerce(), shared by Amazon purchases and food orders; declared before the setup calls below run.
+let commerceShared: { treasury: Treasury; operator: { name: string; handle: () => string | undefined } } | undefined;
+const sendOnly: Pick<Channel, "send"> = { send: (handle, text) => channel.send(handle, text) };
 const purchases = await setupPurchases();
+const food = await setupFood();
 const phone = setupPhone();
-const app = createApp({ db, deviceManager, channel, model, log, money, calendar, purchases, phone });
+const app = createApp({ db, deviceManager, channel, model, log, money, calendar, purchases, phone, food });
 if (web) voice = setupVoice({ app, apiKey, publicUrl, dev: channelName === "dev", phone, log });
 else log("voice: phone calls and MCP need the web server (DEVICE_MODE=eth)");
 
@@ -134,41 +143,73 @@ try {
 }
 log(`AgentSign listening on ${channel.name} (mode ${mode}, model ${process.env.XAI_MODEL || DEFAULT_MODEL}, devices ${process.env.DEVICES ?? "hid"})`);
 
-/**
- * Buying on Amazon with ETH (src/purchases.ts): on when TREASURY_PRIVATE_KEY is set in Ethereum mode. The store is the
- * operator's own Amazon account through a browser (AMAZON_STORAGE_STATE, see "Buying on Amazon" in DESIGN.md), or a
- * built-in demo catalog (AMAZON_MERCHANT=demo) to try the flow without touching Amazon.
- */
-async function setupPurchases(): Promise<Purchases | undefined> {
+/** The shared treasury and operator, set up once for whichever of Amazon and food comes first. */
+function commerce(what: string): NonNullable<typeof commerceShared> {
+  if (commerceShared) return commerceShared;
   const key = process.env.TREASURY_PRIVATE_KEY?.trim();
   const address = process.env.TREASURY_ADDRESS?.trim();
-  const kind = process.env.AMAZON_MERCHANT?.trim() || (process.env.AMAZON_STORAGE_STATE || process.env.AMAZON_STORAGE_STATE_PATH ? "browser" : "");
-  if (!key && !address && !kind) {
-    log("amazon: off (set TREASURY_ADDRESS or TREASURY_PRIVATE_KEY, and AMAZON_MERCHANT, to let owners buy things)");
-    return undefined;
-  }
-  if (mode !== "eth") {
-    log("amazon: needs DEVICE_MODE=eth (buyers pay the treasury in ETH), so it is off");
-    return undefined;
-  }
-  if (!(key || address) || !kind) {
-    console.error(`Buying on Amazon needs a treasury (TREASURY_ADDRESS or TREASURY_PRIVATE_KEY) and a store (AMAZON_MERCHANT=mock or demo, or an Amazon session in AMAZON_STORAGE_STATE). See "Buying on Amazon" in DESIGN.md.`);
+  if (!key && !address) {
+    console.error(`${what} needs a treasury (TREASURY_ADDRESS or TREASURY_PRIVATE_KEY). See "Buying on Amazon" in DESIGN.md.`);
     process.exit(1);
   }
-  const limitUsd = Number(process.env.PURCHASE_LIMIT_USD || 20);
-  if (!(limitUsd > 0 && limitUsd <= 100)) {
-    console.error(`PURCHASE_LIMIT_USD must be a dollar amount between 0 and 100, not "${process.env.PURCHASE_LIMIT_USD}".`);
-    process.exit(1);
-  }
-  const limitCents = Math.round(limitUsd * 100);
   const chain = createBaseChain({ rpcUrl: process.env.BASE_RPC_URL });
-  let treasury;
+  let treasury: Treasury;
   try {
     treasury = createTreasury({ privateKey: key, address }, chain);
   } catch (err) {
     console.error((err as Error).message);
     process.exit(1);
   }
+  const operatorTag = process.env.OPERATOR_TAG?.trim().toLowerCase();
+  const operatorName = process.env.OPERATOR_NAME?.trim() || (operatorTag ? operatorTag.replace(/^@/, "").replace(/^./, (c) => c.toUpperCase()) : "the operator");
+  const operator = { name: operatorName, handle: () => (operatorTag ? db.primaryHandle(db.accountByTag(operatorTag.startsWith("@") ? operatorTag : `@${operatorTag}`)?.id ?? -1) : undefined) };
+  Promise.all([treasury.balanceWei(), chain.tokenBalance(USDC.address, treasury.address)]).then(
+    ([wei, usdc]) => log(`treasury ${treasury.address} holds ${formatUsdc(usdc)} USDC and ${formatEth(wei)} ETH${key ? "" : " (receive only, refunds by hand)"}`),
+    (err: unknown) => log(`could not read the treasury balance: ${(err as Error).message}`),
+  );
+  return (commerceShared = { treasury, operator });
+}
+
+/** A per-order cap from the environment, in cents; exits on a bad value. */
+function usdLimit(name: string, fallbackUsd: number, maxUsd: number): number {
+  const usd = Number(process.env[name] || fallbackUsd);
+  if (!(usd > 0 && usd <= maxUsd)) {
+    console.error(`${name} must be a dollar amount between 0 and ${maxUsd}, not "${process.env[name]}".`);
+    process.exit(1);
+  }
+  return Math.round(usd * 100);
+}
+
+/** A Playwright storage state from its env var (JSON, or base64 of it, as fly secrets carry it) or a file path. */
+function storageState(inline: string | undefined, path: string | undefined): string {
+  let state = inline?.trim() ?? "";
+  if (!state && path?.trim()) state = readFileSync(path.trim(), "utf8");
+  return state && !state.startsWith("{") ? Buffer.from(state, "base64").toString("utf8") : state;
+}
+
+/** 1, true or yes. */
+function isSet(v: string | undefined): boolean {
+  return /^(1|true|yes)$/i.test(v ?? "");
+}
+
+/**
+ * Buying on Amazon with USDC (src/purchases.ts): on when a store is set (AMAZON_MERCHANT, or an Amazon session) in
+ * Ethereum mode, with a treasury. The store is the operator's own Amazon account through a browser
+ * (AMAZON_STORAGE_STATE, see "Buying on Amazon" in DESIGN.md), a mock that confirms every order, or a built-in demo
+ * catalog (AMAZON_MERCHANT=demo) to try the flow without touching Amazon.
+ */
+async function setupPurchases(): Promise<Purchases | undefined> {
+  const kind = process.env.AMAZON_MERCHANT?.trim() || (process.env.AMAZON_STORAGE_STATE || process.env.AMAZON_STORAGE_STATE_PATH ? "browser" : "");
+  if (!kind) {
+    log("amazon: off (set AMAZON_MERCHANT and a treasury, TREASURY_ADDRESS or TREASURY_PRIVATE_KEY, to let owners buy things)");
+    return undefined;
+  }
+  if (mode !== "eth") {
+    log("amazon: needs DEVICE_MODE=eth (buyers pay the treasury in USDC), so it is off");
+    return undefined;
+  }
+  const { treasury, operator } = commerce("Buying on Amazon");
+  const limitCents = usdLimit("PURCHASE_LIMIT_USD", 20, 100);
   const amazonLog = (line: string) => log(`[amazon] ${line}`);
   let merchant: Merchant & { warm?(): Promise<void> };
   if (kind === "demo") merchant = demoMerchant();
@@ -195,13 +236,8 @@ async function setupPurchases(): Promise<Purchases | undefined> {
       await live.close();
     };
   } else if (kind === "browser") {
-    let state = process.env.AMAZON_STORAGE_STATE?.trim() ?? "";
-    const path = process.env.AMAZON_STORAGE_STATE_PATH?.trim();
-    if (!state && path) state = readFileSync(path, "utf8");
-    // The secret may be the JSON itself or base64 of it (fly secrets are easier to set that way).
-    if (state && !state.startsWith("{")) state = Buffer.from(state, "base64").toString("utf8");
     try {
-      merchant = createAmazonMerchant({ storageState: state, limitCents, dryRun: /^(1|true|yes)$/i.test(process.env.AMAZON_DRY_RUN ?? ""), log: amazonLog });
+      merchant = createAmazonMerchant({ storageState: storageState(process.env.AMAZON_STORAGE_STATE, process.env.AMAZON_STORAGE_STATE_PATH), limitCents, dryRun: isSet(process.env.AMAZON_DRY_RUN), log: amazonLog });
     } catch (err) {
       console.error(`AMAZON_STORAGE_STATE is not a usable Amazon session: ${(err as Error).message}`);
       process.exit(1);
@@ -210,27 +246,52 @@ async function setupPurchases(): Promise<Purchases | undefined> {
     console.error(`Unknown AMAZON_MERCHANT "${kind}". Use mock, demo or browser.`);
     process.exit(1);
   }
-  const operatorTag = process.env.OPERATOR_TAG?.trim().toLowerCase();
-  const operatorName = process.env.OPERATOR_NAME?.trim() || (operatorTag ? operatorTag.replace(/^@/, "").replace(/^./, (c) => c.toUpperCase()) : "the operator");
-  const purchases = createPurchases({
-    db,
-    merchant,
-    treasury,
-    money,
-    channel: { send: (handle, text) => channel.send(handle, text) },
-    limitCents,
-    shipsTo: process.env.PURCHASE_SHIPS_TO?.trim() || `${operatorName}'s address`,
-    operator: { name: operatorName, handle: () => (operatorTag ? db.primaryHandle(db.accountByTag(operatorTag.startsWith("@") ? operatorTag : `@${operatorTag}`)?.id ?? -1) : undefined) },
-    log,
-  });
-  log(`amazon: on (${kind}${process.env.AMAZON_DRY_RUN ? ", dry run" : ""}), limit $${limitUsd.toFixed(2)} per order, treasury ${treasury.address}${key ? "" : " (receive only, refunds by hand)"}, ships to ${purchases.shipsTo}`);
-  Promise.all([treasury.balanceWei(), chain.tokenBalance(USDC.address, treasury.address)]).then(
-    ([wei, usdc]) => log(`amazon: treasury holds ${formatUsdc(usdc)} USDC and ${formatEth(wei)} ETH`),
-    (err: unknown) => log(`amazon: could not read the treasury balance: ${(err as Error).message}`),
-  );
+  const shipsTo = process.env.PURCHASE_SHIPS_TO?.trim() || `${operator.name}'s address`;
+  const purchases = createPurchases({ db, merchant, treasury, money, channel: sendOnly, limitCents, shipsTo, operator, log });
+  log(`amazon: on (${kind}${isSet(process.env.AMAZON_DRY_RUN) ? ", dry run" : ""}), limit $${(limitCents / 100).toFixed(2)} per order, treasury ${treasury.address}, ships to ${shipsTo}`);
   // A browser session that is signed out shows up in the log at start, not at the first purchase.
   merchant.warm?.().then(() => log("amazon: session ready"), (err: unknown) => log(`amazon: WARNING ${(err as Error).message}`));
   return purchases;
+}
+
+/**
+ * Ordering food on DoorDash with USDC (src/food/): on when FOOD_PROVIDER is set in Ethereum mode, with the same
+ * treasury as Amazon. demo: an in-memory DoorDash that confirms every order (the deployed default). browser:
+ * doordash.com signed in as the operator (DOORDASH_STORAGE_STATE from pnpm doordash:login). cli: DoorDash's dd-cli beta
+ * at DOORDASH_CLI. See "Ordering food on DoorDash" in DESIGN.md.
+ */
+async function setupFood(): Promise<Food | undefined> {
+  const kind = process.env.FOOD_PROVIDER?.trim();
+  if (!kind) {
+    log("food: off (set FOOD_PROVIDER=demo, browser or cli, and a treasury, to let owners order food)");
+    return undefined;
+  }
+  if (mode !== "eth") {
+    log("food: needs DEVICE_MODE=eth (owners pay the treasury in USDC), so it is off");
+    return undefined;
+  }
+  const { treasury, operator } = commerce("Ordering food");
+  const limitCents = usdLimit("FOOD_LIMIT_USD", 40, 200);
+  const dryRun = isSet(process.env.DOORDASH_DRY_RUN);
+  const foodLog = (line: string) => log(`[doordash] ${line}`);
+  let provider: FoodProvider;
+  if (kind === "demo") provider = demoDoorDash();
+  else if (kind === "browser") {
+    try {
+      provider = createDoorDashProvider({ storageState: storageState(process.env.DOORDASH_STORAGE_STATE, process.env.DOORDASH_STORAGE_STATE_PATH), limitCents, dryRun, log: foodLog });
+    } catch (err) {
+      console.error(`DOORDASH_STORAGE_STATE is not a usable DoorDash session: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  } else if (kind === "cli") provider = createDoorDashCli({ bin: process.env.DOORDASH_CLI, limitCents, dryRun, log: foodLog });
+  else {
+    console.error(`Unknown FOOD_PROVIDER "${kind}". Use demo, browser or cli.`);
+    process.exit(1);
+  }
+  const food = createFood({ db, provider, treasury, money, channel: sendOnly, limitCents, operator, log });
+  log(`food: on (${kind}${dryRun ? ", dry run" : ""}), limit $${(limitCents / 100).toFixed(2)} per order, treasury ${treasury.address}`);
+  provider.warm?.().then(() => log("food: DoorDash session ready"), (err: unknown) => log(`food: WARNING ${(err as Error).message}`));
+  return food;
 }
 
 /**
@@ -265,6 +326,7 @@ async function shutdown(): Promise<void> {
   await voice?.close().catch((err: unknown) => log(`voice stop: ${(err as Error).message}`));
   await app.close();
   await purchases?.close().catch((err: unknown) => log(`amazon stop: ${(err as Error).message}`));
+  await food?.close().catch((err: unknown) => log(`food stop: ${(err as Error).message}`));
   await deviceManager.close().catch((err: unknown) => log(`device stop: ${(err as Error).message}`));
   await web?.close();
   db.close();

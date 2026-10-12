@@ -6,7 +6,7 @@ import { getAddress } from "ethers";
 import { demoMoney, type Money } from "../money.js";
 import type { Account } from "../db.js";
 import type { Action } from "../types.js";
-import { calendarOf, claimsProposal, history, ownerFacts, toolLoop, type AgentDeps } from "./agent.js";
+import { calendarOf, claimsProposal, foodOf, history, ownerFacts, toolLoop, type AgentDeps } from "./agent.js";
 import { botMention, channelLabel, firstName, joinHint } from "./bot.js";
 import { runEngine, type EngineHooks } from "./engine.js";
 import type { ChatMessage, ToolSpec } from "./xai.js";
@@ -85,7 +85,8 @@ function accountLine(owner: Account, money: Money): string {
   return `Account: ${owner.tag} at ${address} on Base. Money is real ETH on Base at that address; they fund it by sending ETH on Base there.`;
 }
 
-export function personaSystemPrompt(facts: string[], owner: Account, firstTurn = false, demo = false): string {
+/** `food`: ordering food on DoorDash works here (the first-turn offers mention it). */
+export function personaSystemPrompt(facts: string[], owner: Account, firstTurn = false, demo = false, food = false): string {
   const name = firstName(owner);
   const bot = botMention();
   const join = joinHint();
@@ -98,7 +99,7 @@ export function personaSystemPrompt(facts: string[], owner: Account, firstTurn =
     ...facts,
     "",
     firstTurn
-      ? `This is ${name}'s first message since their account was created. If they asked for something, just do it. Otherwise greet them by name like a friend who's glad they showed up, in two or three short lines, and offer three things to try: ${sendMoney}, add a friend ("add @tag as a friend"), and add something to their calendar.\n`
+      ? `This is ${name}'s first message since their account was created. If they asked for something, just do it. Otherwise greet them by name like a friend who's glad they showed up, in two or three short lines, and offer three things to try: ${sendMoney}, add a friend ("add @tag as a friend"), and ${food ? 'order food ("get me a burrito bowl from chipotle")' : "add something to their calendar"}.\n`
       : "",
     "You do the talking. An execution engine does the work; reach it with delegate. Never mention the engine, delegate, tools, agents or anything behind the curtain: to them it is all just you. If something fails, apologize in the first person, briefly, and say what to try.",
     "- Delegate anything that needs fresh data or doing something: payments (also from a receipt photo), calendar, friends, meetings, past payments, remembering things, buying something on Amazon or asking about an order, and anything they want said to a friend (a thank you, a hello, a reply).",
@@ -113,6 +114,8 @@ export function personaSystemPrompt(facts: string[], owner: Account, firstTurn =
     "- Google Calendar: the facts above say whether it is connected. If they ask to connect it, delegate; when the engine reports a link goes out under your reply, say only that in a few words, like \"here's the link to connect your Google Calendar.\" Asked whether it is connected, answer from the facts.",
     "- If they clearly ask to delete, close or reset their account, delegate it. Do not ask 'are you sure' yourself: their Ledger is the confirmation, and rejecting there cancels. Once the engine reports it waits on the Ledger, reply only: \"Done when you approve it on your Ledger.\"",
     "- Pass on only what the engine reported or what is above. Never make up balances, times, people or results.",
+    "- Food: where the facts say DoorDash is available, you can order food delivered, paid in USDC on Base up to the limit there. Delegate anything about food (what's around, a menu, an order, where it is). If they don't say what they want, the engine comes back with a few options; pass them on and let them pick. If there is no delivery address in the facts, ask for theirs first.",
+    "- A food order has the same three steps: they approve the USDC payment on their Ledger, it lands at the treasury on Base, then the order is placed on DoorDash and a system note says it was ordered (with the ETA) or refunded. The confirm text under your reply already carries the total, the address and the ETA, so say what you set up in a few words; say it is on its way only once that note exists.",
     "- An Amazon purchase has three steps: they approve the USDC payment on their Ledger, it lands at the treasury on Base, then the order is placed and a system note says it was ordered (with the order number) or refunded. Say it is ordered only once that note exists; before that it is paid and waiting, or just waiting on the Ledger.",
     "- Nothing that waits on their Ledger has happened yet. Never say money was sent, an event was added, a friend was added or the account was deleted unless the engine reports it was done at once (their policy allows that) or a system note says it was approved and executed. A proposal is only waiting. A note to a friend goes out at once: say it went out only when the engine reports it was delivered.",
     "- Two different questions: what kinds of things need their Ledger (their policy: answer from the policy line in the facts, naming what goes to the Ledger and what you just do) versus what is waiting on it right now (the 'Waiting on' line). When they want to change the policy, delegate it; once the engine reports the new policy, confirm it in a few words.",
@@ -175,7 +178,7 @@ export async function runPersonaTurn(deps: AgentDeps, owner: Account, text: stri
   const money = deps.money ?? demoMoney();
   const balance = await money.balanceText(owner).catch(() => "unknown right now (the engine can check)");
   const reply = await toolLoop(deps, {
-    system: personaSystemPrompt([accountLine(owner, money), ...ownerFacts(db, owner, balance, calendarOf(deps), deps.purchases, deps.phone)], owner, firstTurn, money.mode !== "eth"),
+    system: personaSystemPrompt([accountLine(owner, money), ...ownerFacts(db, owner, balance, calendarOf(deps), deps.purchases, deps.phone, foodOf(deps))], owner, firstTurn, money.mode !== "eth", !!foodOf(deps)),
     messages,
     tools,
     maxSteps: MAX_STEPS,

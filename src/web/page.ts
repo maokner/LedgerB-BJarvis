@@ -73,7 +73,8 @@ export function page(v: PageView): string {
   const title = ACTION_TITLES[action.code];
   const n = at[v.status] ?? 1;
   const steps = STEPS.map((name, i) => `<li class="${i < n ? "done" : i === n ? (v.status === "rejected" || v.status === "expired" || v.status === "failed" ? "fail" : "now") : ""}"><i></i><span>${name}</span></li>`).join("");
-  const amount = isTxCode(action.code) ? action.fields.find((f) => f.label === "Amount") : undefined;
+  // The headline price: Amount for a payment, Total for a purchase (BUY, EAT), with the on-chain amount under it.
+  const amount = isTxCode(action.code) ? action.fields.find((f) => f.label === "Amount" || f.label === "Total") : undefined;
   const eth = isTxCode(action.code) ? action.fields.find((f) => f.label === "ETH" || f.label === "USDC") : undefined;
   const rows = action.fields
     .filter((f) => f !== amount && f !== eth)

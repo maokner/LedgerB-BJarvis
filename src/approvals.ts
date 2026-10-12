@@ -8,7 +8,7 @@ import { txLink } from "./chain.js";
 import type { ActionStatus, Db } from "./db.js";
 import { execute, ExecutorError, field } from "./executors.js";
 import { demoMoney, type Money } from "./money.js";
-import { type Action, type ActionCode, ANY_DEVICE, type Channel, type DeviceManager, type SignResult } from "./types.js";
+import { type Action, type ActionCode, ANY_DEVICE, type Channel, type DeviceManager, isPurchaseCode, type SignResult } from "./types.js";
 
 export interface RequestOptions {
   /** Why this was proposed, for the log ("agent", "accept shortcut", "invite from @matt"). */
@@ -76,7 +76,7 @@ export function createApprovals(deps: {
   money?: Money;
   /** Mirrors executed CAL events to the owner's Google Calendar when they connected one. */
   calendar?: Pick<Calendar, "afterEvent">;
-  /** Hears how every action ended: executed (with the broadcast hash in Ethereum mode) or rejected, failed, expired. Purchases follow BUY from here. */
+  /** Hears how every action ended: executed (with the broadcast hash in Ethereum mode) or rejected, failed, expired. Purchases follow BUY and EAT from here. */
   onSettled?: (action: Action, status: Exclude<ActionStatus, "pending" | "approved">, extra: { txHash?: string }) => void;
 }): Approvals {
   const { db, deviceManager, channel, titles, calendar } = deps;
@@ -254,7 +254,7 @@ export function createApprovals(deps: {
       await send(n.handle, [n.text, ...extra].join(" "));
     }
     // A purchase follows its own payment (src/purchases.ts): the order text is its confirmation.
-    if (txHash && j.action.code !== "BUY") watchReceipt(j, txHash, outcome.notifications.map((n) => n.handle));
+    if (txHash && !isPurchaseCode(j.action.code)) watchReceipt(j, txHash, outcome.notifications.map((n) => n.handle));
     return true;
   }
 

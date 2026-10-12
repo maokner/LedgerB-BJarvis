@@ -62,6 +62,7 @@ Source layout (TypeScript, ESM, Node 22+, `tsx` to run, `vitest` to test, `bette
 | `src/approvals.ts`, `src/executors.ts` | app agent | propose, sign, verify, execute, notify |
 | `src/app.ts` | app agent | `createApp()`: routing, onboarding, friend requests, everything behind `App.handleInbound` |
 | `src/calendar/` | app agent | the owners' calendars: AgentSign's table plus Google Calendar (OAuth link, merged reads, mirroring approved events) |
+| `src/food/` | app agent | ordering food on DoorDash: the provider seam, the demo DoorDash, the browser driver, the dd-cli adapter, the EAT tools |
 | `src/index.ts` | app agent | entry: env, DB, device manager, channel, app |
 | `src/channels/` | channel agent | iMessage on Photon's hosted service (the default); Telegram bot channel; local HTTP + REPL channel; iMessage on the Mac's own Messages |
 | `src/agent/bot.ts` | app agent | how Jarvis names itself, the chat and the way to join, per channel (`CHANNEL`, `PHOTON_NUMBER`) |
@@ -77,7 +78,7 @@ An `Action` is a short code plus 1..6 label/value pairs (see `src/types.ts`). `s
 
 The device parses these bytes itself, shows the title for the code and every field, and after the person presses both buttons on **Approve** it signs `sha256(bytes)` with Ed25519 (SLIP-0010 path `m/44'/8008'/0'/0'/0'`). The server verifies with `verifyActionSignature()` against the pubkey stored on the account. Unknown codes are refused by the device. The action id makes every signature single-use: the server only accepts a signature for the action it is currently waiting on.
 
-Codes: `PAY` Send money, `CAL` Add to calendar, `FRQ` Friend request, `FAC` Accept friend, `ACC` Create account, `DEL` Delete account, `BUY` Buy on Amazon (`DEL` and `BUY` are Ethereum mode only: the custom app refuses codes it does not know, so the engine does not offer them there).
+Codes: `PAY` Send money, `CAL` Add to calendar, `FRQ` Friend request, `FAC` Accept friend, `ACC` Create account, `DEL` Delete account, `BUY` Buy on Amazon, `EAT` Order food (`DEL`, `BUY` and `EAT` are Ethereum mode only: the custom app refuses codes it does not know, so the engine does not offer them there).
 
 Field conventions (the server builds them, the device just shows them):
 
@@ -90,6 +91,7 @@ Field conventions (the server builds them, the device just shows them):
 | FAC | `From @matt` |
 | DEL | `Tag @matt`, `Address 0x...` (the full lowercase address) |
 | BUY | `Item Trident Original Sugar Free Gum...` (the title, cut to one line), `Total $4.35` (item, shipping and tax), `USDC 4.35`, `To 0x...` (the treasury) |
+| EAT | `From Chipotle Mexican Grill`, `Order 1x Burrito Bowl, 2x Chips`, `Deliver 1 Market St Apt 5, San Francisco` (street and city), `Total $25.82` (food, fees, tax, tip), `USDC 25.82`, `To 0x...` (the treasury) |
 
 ## Device manager
 
@@ -105,6 +107,7 @@ Devices come from `DEVICES` in the environment: `speculos:<host>:<port>` entries
 An account is the device's address at m/44'/60'/0'/0/0, verified on screen at signup.
 `PAY` is a real EIP-1559 ETH transfer on Base mainnet that the Ethereum app clear-signs (amount, address, fees); the server broadcasts the signed transaction and stores the hash.
 `BUY` is a USDC transfer on Base (a call on the token contract) that the app clear-signs the same way once the server hands it Ledger's signed token descriptor (`EthTxMeta.resolution`, fetched from Ledger's crypto-assets list at proposal time).
+`EAT` (ordering food) is the same USDC transfer to the treasury, clear-signed the same way.
 `CAL`, `FRQ`, `FAC`, `DEL` are personal messages (`actionMessage()` in `src/actions.ts`) shown in full on the device and verified with ecrecover.
 `DEVICE_MODE=agentsign` (offline demo): the custom Nano S Plus app in `device-app/`, demo dollars, Speculos.
 
@@ -118,7 +121,7 @@ Two model layers per account (`src/agent/`), in the spirit of Poke:
 - the **persona**, Jarvis, talks to the owner: a clever friend over text (the Poke persona, minus anything that is Poke's), concise, witty when it fits, mirroring the owner's casing and tone, plain text, no emoji. Its only tool is `delegate(goal, context)`, which it never mentions. It knows the owner's tag, address and balance, greets and offers three things to try on the first turn after sign-up, answers setup and "what can you do" questions without delegating, and adds one in-the-moment offer in roughly one reply out of five.
 - the **engine** never talks to the owner. It runs the tools and reports plain facts back to the persona, never inventing anything.
 
-Safe tools (engine, execute directly): `get_balance`, `list_friends`, `get_calendar`, `get_notes`, `remember`, `list_transactions`, `send_note`, `message_agent`, `propose_meeting`, `answer_meeting`, `set_ledger_policy`, `connect_google_calendar`, `disconnect_google_calendar`, and where buying is set up `search_amazon` and `list_purchases`.
+Safe tools (engine, execute directly): `get_balance`, `list_friends`, `get_calendar`, `get_notes`, `remember`, `list_transactions`, `send_note`, `message_agent`, `propose_meeting`, `answer_meeting`, `set_ledger_policy`, `connect_google_calendar`, `disconnect_google_calendar`, where buying is set up `search_amazon` and `list_purchases`, and where food ordering is set up `set_delivery_address`, `search_doordash`, `doordash_menu`, `quote_doordash` and `list_purchases`.
 
 The Ledger policy lives on the account (`accounts.policy`, JSON: a preset plus per-guard overrides) and is read by `propose_action`, by `src/meetings.ts` when a meeting is booked, and by the `accept` shortcut.
 When the policy does not gate an action, `executeDirectly` runs the very same executor the Ledger path would run, in a transaction, at once; the engine's result says "Done at once", the persona tells the owner, and the task ends on that line (like a proposal does) so the model cannot embellish it.
@@ -161,6 +164,8 @@ Only accepted friends can be reached; the engine composes the note in the owner'
 - `FAC`: friendship `accepted`, text both.
 - `DEL`: in one transaction remove the account, its handles, friendships, meetings, notes, events, chat history and peer threads; the actions log and transactions stay, detached from it (demo balances are forfeited). The person is a stranger again and can sign up anew.
 - `BUY`: the signed transfer to the treasury is already broadcast (like an Ethereum-mode `PAY`); the executor only texts "Paid ... I'll place the Amazon order as soon as Base confirms it". `src/purchases.ts` takes it from there (below).
+- `EAT`: the same for food: the transfer is already broadcast and the executor texts "Paid ... I'll place the DoorDash order as soon as Base confirms it".
+  The EAT instance of `src/purchases.ts` takes it from there.
 
 ## Buying on Amazon (`src/purchases.ts`, `src/merchant.ts`, `src/amazon/`, `src/treasury.ts`)
 
@@ -199,6 +204,59 @@ Texts to the owner, one per step: the reply with the confirm prompt (item, total
 Outcomes are also system notes in the owner's history, so the next turn can answer "did it ship?".
 The operator (`OPERATOR_TAG`) is texted only for `review` and `refund_failed`.
 Everything ships to the Amazon account's default address (`PURCHASE_SHIPS_TO` says so to buyers); an order is one unit of one item.
+
+## Ordering food on DoorDash (`src/food/`, `src/purchases.ts`, `src/treasury.ts`)
+
+Food runs through the same escrow as Amazon: the owner pays USDC on Base to the operator's treasury with an `EAT` action on their Ledger, and once Base confirms, the server places the order on the operator's own DoorDash account.
+`src/purchases.ts` is one state machine for both stores, one instance each; a `PurchaseWording` holds what differs (the action code, the id the model passes, the Ledger's fields, the texts), and each instance only touches the purchase rows of its own `code` (`purchases.code`, `BUY` or `EAT`).
+So every rule of the Amazon section holds here unchanged: the cap at prepare and at confirm, the order only after Base confirms, a refund only on a definite no-purchase, the `ordering` checkpoint, and the same restart recovery.
+
+```
+owner: "hey can you deliver me a burrito bowl"
+  engine: (no address in the facts) ask; set_delivery_address with the one the owner gives   (accounts.delivery_address)
+  engine: search_doordash "burrito"  ──► provider.searchRestaurants(query, address)
+  engine: doordash_menu <store_id>   ──► provider.menu: item ids, names, prices
+  engine: quote_doordash <store_id> [{item_id, quantity}] tip 15%
+          ──► provider.quote: food, fees, tax, tip, total, ETA     (nothing ordered)
+          ──► cap: total <= FOOD_LIMIT_USD (default $40), else an error the model reports
+          ──► a draft in memory for 20 minutes under a short quote_id (q1a2b3c), bound to this owner
+  engine: propose_action EAT Order <quote_id>
+          ──► prepare: provider.quote again (today's total), the cap again, money.transferUsdc
+          ──► purchases row "proposed" (code EAT); EAT on the Ledger (the Ethereum app clear-signs "25.82 USDC" to the treasury)
+  signed  ──► tx broadcast, row "funded", text "Paid ... I'll place the DoorDash order as soon as Base confirms it"
+  receipt ──► Base confirms ──► row "ordering" (the checkpoint)
+          ──► confirm: the cap again, provider.confirm: same store, same items, same total, Place Order
+                ordered      ──► row "ordered", text "Order placed on DoorDash: ... It arrives at <address> in about 35 minutes."
+                no_purchase  ──► refund from the treasury, as for Amazon
+                uncertain    ──► row "review", the owner and the operator are texted
+```
+
+`src/food/provider.ts` is the seam: `FoodProvider` with `searchRestaurants`, `menu`, `quote` (an exact `FoodQuote` without ordering) and `confirm` (an `Outcome` with the order id and the ETA, or `no_purchase` only when certain nothing was ordered, or `uncertain`).
+`src/food/food.ts` presents a provider as a `Merchant` for `createPurchases` (`prepare(quoteId)` prices the draft again, `confirm(quote)` checks the cap and places it) and adds the engine's tools on top.
+A draft lives in memory only: after a restart the model quotes again.
+A draft belongs to the owner who asked for it, so nobody can pay for another owner's order or send food to their address.
+
+DoorDash has no public consumer ordering API, so there are three providers behind `FOOD_PROVIDER` (off unless set; Ethereum mode and a treasury are required):
+
+- `demo` (`src/food/demo.ts`): an in-memory DoorDash with five restaurants, real-looking menus and DoorDash-style fees (delivery fee, a 15% service fee of at least $3.00, 8.625% tax, the tip).
+  Every order goes through and nothing is bought.
+  It is the deployed default, so the whole flow works today.
+- `browser` (`src/food/browser.ts`, `src/food/pages.ts`): doordash.com in Playwright Chromium, signed in as the operator (`pnpm doordash:login` writes the session; `DOORDASH_STORAGE_STATE` carries it).
+  Cloudflare refuses plain HTTP, so a real browser with a real session is the only way in without an API.
+  One operation at a time; the cart must be empty before the driver fills it, and the checkout must show exactly one cart with exactly the quoted items at the delivery address, or it stops; the driver empties only a cart it filled; screenshots on every failure in `data/doordash-shots/`; `DOORDASH_DRY_RUN=1` goes to "Place Order" and stops; the button is pressed at most once, and after the press the outcome is `ordered` (the id from `/orders/<id>/`) or `uncertain`.
+  The selectors are written from DoorDash's known layout (search at `/search?query=`, stores at `/store/<slug>-<id>/`, the item modal's "Add to cart", the cart drawer, `/checkout/` with "Place Order") with regex fallbacks over the visible text, and they have not been run against a signed-in session yet: the first step is a signed-in dry run against the real account.
+- `cli` (`src/food/cli.ts`): DoorDash's `dd-cli` beta (waitlist, macOS, US and Canada) driven over `child_process` with `--json`, the binary at `DOORDASH_CLI`.
+  It is built against the announced beta syntax (`auth status`, `search --query --max-results --json`, `cart add --item-id --quantity`, `cart show --json`, `checkout --confirm`) and is not yet verifiable; the menu, address, tip and cart-clear commands are guesses in the same style.
+  The command table at the top of the file is the only place the syntax lives, so adjusting it is the whole job when the docs land.
+  Every reply is parsed defensively, and the same cart and checkout rules apply.
+
+Engine tools, only where food ordering is set up: `set_delivery_address` (only an address the owner gives as their own), `search_doordash`, `doordash_menu`, `quote_doordash`, and `list_purchases` (both stores in one list).
+Without an address, search and quote return an error that tells the engine to ask for one.
+The persona tells the same three-step story as for Amazon: the Ledger, the payment lands, the order is placed with its ETA; it says the food is on its way only once the system note exists.
+
+`EAT` fields on the Ledger and the approval page: `From Chipotle Mexican Grill`, `Order 1x Burrito Bowl, 2x Chips`, `Deliver 1 Market St Apt 5, San Francisco` (the street and the city), `Total $25.82` (food, fees, tax and tip), `USDC 25.82`, `To 0x...` (the treasury).
+The texts, one per step: the reply with "Please confirm on your Ledger: Order food on DoorDash: <restaurant>, <items>, $25.82 all in, delivered to <address> in about 25 minutes. That is 25.82 USDC to the AgentSign treasury ..." (plus "it comes back to you if the order doesn't go through" only when the treasury can refund), "Paid ...", then "Order placed on DoorDash ... It arrives at <address> in about 25 minutes." or the refund or review text.
+The knobs: `FOOD_PROVIDER`, `FOOD_LIMIT_USD` (default 40), `DOORDASH_STORAGE_STATE` or `DOORDASH_STORAGE_STATE_PATH`, `DOORDASH_DRY_RUN`, `DOORDASH_CLI`; the treasury and `OPERATOR_TAG` are shared with Amazon.
 
 ## Channels
 
@@ -241,4 +299,4 @@ Hidden caller IDs are declined with a spoken line.
 
 ## Non-goals
 
-No smart-contract escrow for purchases (the treasury is a wallet the operator controls; the refund path is code, not a contract), no buying elsewhere than Amazon, no delivery to anywhere but the operator's own address, no two-way Google Calendar sync (Google events are read and AgentSign events are mirrored there; edits made on Google are not pulled back into the table), no multi-process agent federation, no Flex/Stax UI, no tokens other than ETH yet. Keep every file short and obvious.
+No smart-contract escrow for purchases (the treasury is a wallet the operator controls; the refund path is code, not a contract), no buying elsewhere than Amazon and DoorDash (food), no Amazon delivery to anywhere but the operator's own address (food goes to the address the owner saved), no DoorDash API until DoorDash ships one (the providers are a demo, a browser driver and the dd-cli beta), no two-way Google Calendar sync (Google events are read and AgentSign events are mirrored there; edits made on Google are not pulled back into the table), no multi-process agent federation, no Flex/Stax UI, no tokens other than ETH and USDC yet. Keep every file short and obvious.

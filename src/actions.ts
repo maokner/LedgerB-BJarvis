@@ -5,7 +5,7 @@
  *
  *   offset  size  meaning
  *   0       4     magic "AGS1"
- *   4       3     action code, ASCII (PAY, CAL, FRQ, FAC, ACC)
+ *   4       3     action code, ASCII (PAY, CAL, FRQ, FAC, ACC; Ethereum mode adds DEL, BUY, EAT)
  *   7       16    action id, raw bytes
  *   23      1     field count N (1..6)
  *   24      ...   N fields, each: label_len u8 (1..16), label bytes, value_len u8 (1..64), value bytes
@@ -22,7 +22,7 @@ export const MAX_LABEL_BYTES = 16;
 export const MAX_VALUE_BYTES = 64;
 export const MAX_ACTION_BYTES = 24 + MAX_FIELDS * (1 + MAX_LABEL_BYTES + 1 + MAX_VALUE_BYTES);
 
-const CODES: readonly ActionCode[] = ["PAY", "CAL", "FRQ", "FAC", "ACC", "DEL", "BUY"];
+const CODES: readonly ActionCode[] = ["PAY", "CAL", "FRQ", "FAC", "ACC", "DEL", "BUY", "EAT"];
 const PRINTABLE_ASCII = /^[\x20-\x7E]+$/;
 
 export class ActionFormatError extends Error {}
