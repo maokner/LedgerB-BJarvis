@@ -72,7 +72,7 @@ src/types.ts, actions.ts     the Action contract and its canonical bytes
 src/approvals.ts             propose -> Ledger -> verify -> execute -> send the result
 src/executors.ts             what each action does after the signature
 src/device/                  the Ledger: Ethereum app over USB, signature verification
-src/web/                     the approval page (WebHID in the browser)
+src/web/                     the approval page and the account page (WebHID in the browser), one theme
 src/agent/                   persona, engine, tools, the xAI client
 src/channels/                iMessage on Photon, Telegram, and a local dev channel for tests
 src/voice/, src/phone.ts     phone calls: Twilio audio into OpenAI's realtime model, linked phone numbers
@@ -105,3 +105,16 @@ The Photon project id and secret are in the Photon dashboard, in the project set
 To deploy to Fly.io, run `scripts/fly-deploy.sh`.
 The live app is `agentsign-jarvis`.
 To point the Twilio number at it, run `scripts/twilio-setup.sh`.
+
+## The account page
+
+Owners have a page for their account at `PUBLIC_URL/`.
+They sign in with their Ledger: the Ethereum app signs a short message, the server recovers the address and finds the account bound to it.
+There is no password and no email.
+The page shows the connections (the chat, the Ledger, Google Calendar, phone calls, Amazon, DoorDash), with one click to connect Google Calendar or link a number for calls, the Ledger policy with switches, friends, recent activity, what is coming, and a delete button.
+Deleting proposes the same `DEL` action the chat would, and the Ledger signs it on the approval page.
+
+The same page is also a static site for Vercel.
+`pnpm build:web` writes it to `dist/site`, and `vercel.json` sends `/api`, `/sign` and `/google` to the Fly server.
+Put the Vercel origin in `DASHBOARD_ORIGINS` on the server, so the page's requests pass the origin check.
+To deploy: `vercel deploy --prod` in this directory, with the project's build settings taken from `vercel.json`.

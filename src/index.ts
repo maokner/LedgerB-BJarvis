@@ -22,6 +22,7 @@ import { createFood, type Food } from "./food/food.js";
 import type { FoodProvider } from "./food/provider.js";
 import { createTreasury, type Treasury } from "./treasury.js";
 import type { Channel } from "./types.js";
+import { createAccountApi } from "./web/account.js";
 import { startWebServer, type WebServer } from "./web/server.js";
 import { setupVoice, type VoiceSetup } from "./voice/index.js";
 import { normalizeHandle } from "./handles.js";
@@ -68,8 +69,9 @@ const publicUrl = process.env.PUBLIC_URL || `http://127.0.0.1:${webPort}`;
 const remote = mode === "eth" ? createRemoteDeviceManager({ db, publicUrl, log }) : undefined;
 const deviceManager = remote ? combineDeviceManagers([createEthDeviceManager({ log }), remote]) : createDeviceManager({ devices, log });
 let web: WebServer | undefined;
-// Google Calendar, phone call and MCP routes ride on the approval page; the latter are set once the app exists.
+// Google Calendar, account, phone call and MCP routes ride on the approval page; the latter two are set once the app exists.
 let voice: VoiceSetup | undefined;
+let account: ReturnType<typeof createAccountApi> | undefined;
 const googleClientId = process.env.GOOGLE_CLIENT_ID?.trim();
 const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim();
 if ((googleClientId || googleClientSecret) && !(googleClientId && googleClientSecret)) {
@@ -90,7 +92,8 @@ if (remote) {
   try {
     web = await startWebServer({
       db, remote, port: webPort, host: process.env.WEB_HOST || "127.0.0.1", log,
-      routes: async (req, res, path) => (await calendar.routes(req, res, path)) || (voice ? voice.routes(req, res, path) : false),
+      routes: async (req, res, path) =>
+        (await calendar.routes(req, res, path)) || (account ? await account.routes(req, res, path) : false) || (voice ? voice.routes(req, res, path) : false),
       upgrades: (req, socket, head, path) => voice?.upgrades(req, socket, head, path) ?? false,
     });
     await web.warm();
@@ -98,7 +101,7 @@ if (remote) {
     console.error(`Cannot start the approval page on port ${webPort}: ${(err as Error).message}`);
     process.exit(1);
   }
-  log(`approval page on http://127.0.0.1:${web.port}, links point to ${publicUrl}`);
+  log(`approval page and account page on http://127.0.0.1:${web.port}, links point to ${publicUrl}`);
   // WebHID only works in a secure context: https, or this Mac's own localhost.
   if (!/^https:\/\/|^http:\/\/(127\.0\.0\.1|localhost)[:/]/.test(`${publicUrl}/`)) log(`PUBLIC_URL is not https, so approval links only work on this Mac. Use ngrok (ngrok http ${webPort}).`);
   if (calendar.available) log(`google calendar: on, redirect URI ${publicUrl}/google/callback (must be listed on the OAuth client)`);
@@ -125,6 +128,8 @@ else if (channelName === "photon") {
   process.exit(1);
 }
 const model = createModel({ apiKey, model: process.env.XAI_MODEL || DEFAULT_MODEL, baseUrl: process.env.XAI_BASE_URL });
+// Where Amazon ships, in words (set by setupPurchases; the account page shows it).
+let shipsTo: string | undefined;
 // Set up once by commerce(), shared by Amazon purchases and food orders; declared before the setup calls below run.
 let commerceShared: { treasury: Treasury; operator: { name: string; handle: () => string | undefined } } | undefined;
 const sendOnly: Pick<Channel, "send"> = { send: (handle, text) => channel.send(handle, text) };
@@ -132,8 +137,10 @@ const purchases = await setupPurchases();
 const food = await setupFood();
 const phone = setupPhone();
 const app = createApp({ db, deviceManager, channel, model, log, money, calendar, purchases, phone, food });
-if (web) voice = setupVoice({ app, apiKey, publicUrl, dev: channelName === "dev", phone, log });
-else log("voice: phone calls and MCP need the web server (DEVICE_MODE=eth)");
+if (web) {
+  voice = setupVoice({ app, apiKey, publicUrl, dev: channelName === "dev", phone, log });
+  account = setupAccount();
+} else log("voice: phone calls and MCP need the web server (DEVICE_MODE=eth)");
 
 try {
   await channel.start(app.handleInbound);
@@ -142,6 +149,24 @@ try {
   process.exit(1);
 }
 log(`AgentSign listening on ${channel.name} (mode ${mode}, model ${process.env.XAI_MODEL || DEFAULT_MODEL}, devices ${process.env.DEVICES ?? "hid"})`);
+
+/**
+ * The account page (src/web/dashboard.ts, data from src/web/account.ts): owners sign in with their Ledger at PUBLIC_URL/
+ * (or on the Vercel copy, vercel.json). DASHBOARD_ORIGINS lists the other origins the page is served from, comma separated,
+ * so their requests pass the origin check and "Back to your account" after Google goes there.
+ */
+function setupAccount(): ReturnType<typeof createAccountApi> {
+  const origins = (process.env.DASHBOARD_ORIGINS ?? "").split(",").map((o) => o.trim()).filter(Boolean);
+  const jarvis = channelName === "photon" ? process.env.PHOTON_NUMBER?.trim() || undefined : channelName === "telegram" ? `@${(process.env.TELEGRAM_BOT_USERNAME ?? "").replace(/^@/, "")}` : undefined;
+  const api = createAccountApi({
+    db, approvals: app.approvals, calendar, money, phone, publicUrl, allowedOrigins: origins, log,
+    purchases: purchases && shipsTo ? { limitCents: purchases.limitCents, shipsTo } : undefined,
+    food: food ? { limitCents: food.limitCents, provider: food.provider } : undefined,
+    channel: { kind: channelName === "telegram" ? "Telegram" : channelName === "dev" ? "dev" : "iMessage", jarvis: jarvis && jarvis !== "@" ? jarvis : undefined },
+  });
+  log(`account page: on at ${publicUrl}/${origins.length ? `, also served from ${origins.join(", ")}` : ""}`);
+  return api;
+}
 
 /** The shared treasury and operator, set up once for whichever of Amazon and food comes first. */
 function commerce(what: string): NonNullable<typeof commerceShared> {
@@ -246,7 +271,7 @@ async function setupPurchases(): Promise<Purchases | undefined> {
     console.error(`Unknown AMAZON_MERCHANT "${kind}". Use mock, demo or browser.`);
     process.exit(1);
   }
-  const shipsTo = process.env.PURCHASE_SHIPS_TO?.trim() || `${operator.name}'s address`;
+  shipsTo = process.env.PURCHASE_SHIPS_TO?.trim() || `${operator.name}'s address`;
   const purchases = createPurchases({ db, merchant, treasury, money, channel: sendOnly, limitCents, shipsTo, operator, log });
   log(`amazon: on (${kind}${isSet(process.env.AMAZON_DRY_RUN) ? ", dry run" : ""}), limit $${(limitCents / 100).toFixed(2)} per order, treasury ${treasury.address}, ships to ${shipsTo}`);
   // A browser session that is signed out shows up in the log at start, not at the first purchase.

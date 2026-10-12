@@ -50,8 +50,11 @@ export interface Calendar {
   readonly available: boolean;
   /** The owner's connected Google account, if any. */
   connection(accountId: number): { email: string } | undefined;
-  /** A fresh one-time link that connects the owner's Google Calendar. */
-  connectLink(accountId: number): string;
+  /**
+   * A fresh one-time link that connects the owner's Google Calendar. `returnTo`: the account page that asked for it
+   * (an origin src/web/account.ts allowed); the page after Google links back there.
+   */
+  connectLink(accountId: number, options?: { returnTo?: string }): string;
   /** Forgets the connection and asks Google to revoke it. False when there was none. */
   disconnect(accountId: number): Promise<boolean>;
   /** Events overlapping [from, to): Google's (when connected and reachable) plus AgentSign's own that are not on Google. */
@@ -93,6 +96,16 @@ interface GoogleEvent {
 }
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+/** A stored return_to as a link target: only plain http(s) URLs, anything else is dropped. */
+function backLink(returnTo: string | null): { label: string; href: string } | undefined {
+  if (!returnTo) return undefined;
+  try {
+    const url = new URL(returnTo);
+    return url.protocol === "https:" || url.protocol === "http:" ? { label: "Back to your account", href: url.href } : undefined;
+  } catch {
+    return undefined;
+  }
+}
 /** Google event ids are base32hex: lowercase a-v and digits, 5 to 1024 characters. */
 const ID_ALPHABET = "0123456789abcdefghijklmnopqrstuv";
 
@@ -308,10 +321,12 @@ export function createCalendar(o: CalendarOptions): Calendar {
     if (!link || !google) return fail("This link has expired.", "Ask Jarvis to connect Google Calendar again and open the new link."), true;
     if (!db.useGoogleLink(link.token)) return fail("This link was already used.", "Ask Jarvis to connect Google Calendar again if it is not connected."), true;
     const code = url.searchParams.get("code");
+    // Opened from the account page: every outcome links back to it.
+    const action = backLink(link.return_to);
     if (!code) {
       log(`google: ${link.account_id} did not grant access (${url.searchParams.get("error") ?? "no code"})`);
       await notify(link.account_id, "Google Calendar was not connected (you didn't grant access). Ask me again any time.");
-      return html(200, messagePage({ eyebrow: "Google Calendar", title: "Not connected.", detail: "You didn't grant access, so nothing changed. Ask Jarvis again any time." })), true;
+      return html(200, messagePage({ eyebrow: "Google Calendar", title: "Not connected.", detail: "You didn't grant access, so nothing changed. Ask Jarvis again any time.", action })), true;
     }
     try {
       const email = await finishConnect(link.account_id, code);
@@ -324,12 +339,12 @@ export function createCalendar(o: CalendarOptions): Calendar {
       }
       const copied = pushed ? ` I copied ${pushed} upcoming AgentSign event${pushed === 1 ? "" : "s"} over.` : "";
       await notify(link.account_id, `Google Calendar connected as ${email}.${copied}${pushNote} I'll read it when you ask about your schedule, and new events you approve on your Ledger will land there too.`);
-      return html(200, messagePage({ eyebrow: "Google Calendar", title: "Connected.", detail: `Jarvis can now read ${esc(email)} and add the events you approve on your Ledger. You can close this tab.`, tone: "ok" })), true;
+      return html(200, messagePage({ eyebrow: "Google Calendar", title: "Connected.", detail: `Jarvis can now read ${esc(email)} and add the events you approve on your Ledger.${action ? "" : " You can close this tab."}`, tone: "ok", action })), true;
     } catch (err) {
       const reason = err instanceof CalendarError ? err.message : "something went wrong on my side";
       log(`google: connect for ${link.account_id} failed: ${(err as Error).stack ?? err}`);
       await notify(link.account_id, `Google Calendar was not connected: ${reason}. Ask me again any time.`);
-      return html(502, messagePage({ eyebrow: "Google Calendar", title: "Not connected.", detail: `${esc(reason)}. Ask Jarvis to try again.`, tone: "bad" })), true;
+      return html(502, messagePage({ eyebrow: "Google Calendar", title: "Not connected.", detail: `${esc(reason)}. Ask Jarvis to try again.`, tone: "bad", action })), true;
     }
   }
 
@@ -339,10 +354,10 @@ export function createCalendar(o: CalendarOptions): Calendar {
       const row = db.googleCalendar(accountId);
       return row ? { email: row.email } : undefined;
     },
-    connectLink(accountId) {
+    connectLink(accountId, options = {}) {
       if (!google) throw new CalendarError("Google Calendar is not set up on this server");
       const token = randomBytes(32).toString("hex");
-      db.insertGoogleLink(token, accountId, new Date(now().getTime() + LINK_TTL_MS));
+      db.insertGoogleLink(token, accountId, new Date(now().getTime() + LINK_TTL_MS), options.returnTo);
       return `${google.publicUrl.replace(/\/$/, "")}/google/connect/${token}`;
     },
     async disconnect(accountId) {

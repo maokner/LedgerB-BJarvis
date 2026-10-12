@@ -180,6 +180,23 @@ describe("google calendar", () => {
     expect(s.notified.at(-1)!.text).toBe("Google Calendar was not connected: the Google Calendar API is not enabled on this server's Google project. Ask me again any time.");
   });
 
+  it("a link from the account page leads back to it after Google, whatever the outcome", async () => {
+    const s = await setup();
+    const back = (html: string) => /<a class="btn" href="([^"]*)">Back to your account<\/a>/.exec(html)?.[1];
+    const denied = await consent(s.get, s.calendar.connectLink(s.matt.id, { returnTo: "https://dash.example/" }), "");
+    expect(back(await denied.text())).toBe("https://dash.example/");
+    const ok = await consent(s.get, s.calendar.connectLink(s.matt.id, { returnTo: "https://dash.example/?a=1&b=<x>" }));
+    const html = await ok.text();
+    expect(html).toContain("Connected.");
+    expect(html).not.toContain("You can close this tab.");
+    expect(back(html)).toBe("https://dash.example/?a=1&amp;b=%3Cx%3E");
+    // Texted links have no page to go back to; a stored return_to that is not http(s) is dropped.
+    const plain = await consent(s.get, s.calendar.connectLink(s.matt.id));
+    expect(back(await plain.text())).toBeUndefined();
+    const sneaky = await consent(s.get, s.calendar.connectLink(s.matt.id, { returnTo: "javascript:alert(1)" }));
+    expect(await sneaky.text()).not.toContain("Back to your account");
+  });
+
   it("an expired link goes nowhere", async () => {
     const s = await setup();
     const link = s.calendar.connectLink(s.matt.id);

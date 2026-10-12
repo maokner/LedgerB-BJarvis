@@ -69,6 +69,14 @@ export interface GoogleLink {
   status: GoogleLinkStatus;
   created_at: string;
   expires_at: string;
+  /** Where the success page links back to (the account page that asked for the link); null for links texted by Jarvis. */
+  return_to: string | null;
+}
+/** A signed-in account page (src/web/account.ts). Only the token's sha256 is stored, never the cookie itself. */
+export interface Session {
+  account_id: number;
+  /** ISO 8601; sliding, pushed forward as the owner uses the page. */
+  expires_at: string;
 }
 export type MessageRole = "user" | "assistant" | "tool" | "system";
 export interface StoredMessage {
@@ -115,6 +123,13 @@ export interface ActionRow {
   signature: string | null;
   error: string | null;
   tx_hash: string | null;
+}
+/** An action with its stamps, for the account page's activity list. */
+export interface ActionRowWithTimes extends ActionRow {
+  /** SQLite's "YYYY-MM-DD HH:MM:SS" (UTC). */
+  created_at: string;
+  /** ISO 8601 once it ended (executed, rejected, failed, expired); null while pending or approved. */
+  resolved_at: string | null;
 }
 
 /**
@@ -189,7 +204,10 @@ create table if not exists google_calendars (
   created_at text not null default (datetime('now')));
 create table if not exists google_links (
   token text primary key, account_id integer not null, status text not null check (status in ('pending','done')),
-  created_at text not null default (datetime('now')), expires_at text not null);
+  created_at text not null default (datetime('now')), expires_at text not null, return_to text);
+create table if not exists sessions (
+  token_hash text primary key, account_id integer not null, created_at text not null default (datetime('now')),
+  expires_at text not null, last_seen_at text not null);
 create table if not exists notes (
   id integer primary key, account_id integer not null, text text not null, created_at text not null default (datetime('now')));
 create table if not exists messages (
@@ -219,6 +237,7 @@ create index if not exists messages_by_account on messages (account_id, id);
 create index if not exists peer_by_thread on peer_messages (thread, id);
 create index if not exists events_by_account on events (account_id, starts_at);
 create index if not exists meetings_open on meetings (status, proposer_id, invitee_id);
+create index if not exists sessions_by_account on sessions (account_id);
 `;
 
 /** Thread key for two agents: the sorted pair of tags. */
@@ -246,6 +265,8 @@ export function openDb(path = "data/agentsign.db") {
   // Databases created before food orders lack purchases.code (every older row is an Amazon BUY) and the delivery address.
   if (!columns("purchases").includes("code")) db.exec("alter table purchases add column code text not null default 'BUY'");
   if (!columns("accounts").includes("delivery_address")) db.exec("alter table accounts add column delivery_address text");
+  // Databases created before the account page lack google_links.return_to.
+  if (!columns("google_links").includes("return_to")) db.exec("alter table google_links add column return_to text");
 
   const one = <T>(sql: string, ...args: unknown[]) => db.prepare(sql).get(...args) as T | undefined;
   const all = <T>(sql: string, ...args: unknown[]) => db.prepare(sql).all(...args) as T[];
@@ -294,7 +315,7 @@ export function openDb(path = "data/agentsign.db") {
      */
     deleteAccount(id: number) {
       const tag = one<{ tag: string }>("select tag from accounts where id = ?", id)?.tag;
-      for (const table of ["handles", "notes", "events", "messages", "google_calendars", "google_links"]) run(`delete from ${table} where account_id = ?`, id);
+      for (const table of ["handles", "notes", "events", "messages", "google_calendars", "google_links", "sessions"]) run(`delete from ${table} where account_id = ?`, id);
       run("delete from friendships where a = ? or b = ?", id, id);
       run("delete from meetings where proposer_id = ? or invitee_id = ?", id, id);
       if (tag) run("delete from peer_messages where from_tag = ? or to_tag = ?", tag, tag);
@@ -392,11 +413,25 @@ export function openDb(path = "data/agentsign.db") {
       run("update google_calendars set access_token = ?, expires_at = ? where account_id = ?", accessToken, expiresAt, accountId),
     /** Forgets the connection; the events table keeps its google_event_id marks (those events exist on Google either way). */
     deleteGoogleCalendar: (accountId: number) => run("delete from google_calendars where account_id = ?", accountId).changes > 0,
-    insertGoogleLink: (token: string, accountId: number, expiresAt: Date) =>
-      run("insert into google_links (token, account_id, status, expires_at) values (?, ?, 'pending', ?)", token, accountId, expiresAt.toISOString()),
+    insertGoogleLink: (token: string, accountId: number, expiresAt: Date, returnTo?: string) =>
+      run("insert into google_links (token, account_id, status, expires_at, return_to) values (?, ?, 'pending', ?, ?)", token, accountId, expiresAt.toISOString(), returnTo ?? null),
     googleLink: (token: string) => one<GoogleLink>("select * from google_links where token = ?", token),
     /** Marks the link used. Returns false when it was not pending any more (a second visit). */
     useGoogleLink: (token: string) => run("update google_links set status = 'done' where token = ? and status = 'pending'", token).changes > 0,
+
+    // account page sessions (src/web/account.ts), keyed by the sha256 of the cookie's token
+    insertSession: (tokenHash: string, accountId: number, expiresAt: Date) =>
+      run("insert into sessions (token_hash, account_id, expires_at, last_seen_at) values (?, ?, ?, ?)", tokenHash, accountId, expiresAt.toISOString(), new Date().toISOString()),
+    /** The session behind a token hash, unless it expired. */
+    session: (tokenHash: string, now = new Date()) =>
+      one<Session>("select account_id, expires_at from sessions where token_hash = ? and expires_at > ?", tokenHash, now.toISOString()),
+    /** Marks the session used; with `expiresAt`, also slides its expiry. */
+    touchSession: (tokenHash: string, expiresAt?: Date) =>
+      run("update sessions set last_seen_at = ?, expires_at = coalesce(?, expires_at) where token_hash = ?", new Date().toISOString(), expiresAt?.toISOString() ?? null, tokenHash),
+    deleteSession: (tokenHash: string) => run("delete from sessions where token_hash = ?", tokenHash).changes > 0,
+    deleteSessionsOf: (accountId: number) => run("delete from sessions where account_id = ?", accountId).changes,
+    /** Drops expired sessions (on startup). */
+    purgeSessions: (now = new Date()) => run("delete from sessions where expires_at <= ?", now.toISOString()).changes,
 
     // notes
     addNote: (accountId: number, text: string) => run("insert into notes (account_id, text) values (?, ?)", accountId, text),
@@ -441,6 +476,12 @@ export function openDb(path = "data/agentsign.db") {
         "select * from actions where account_id = ? and code = 'PAY' and tx_hash is not null order by created_at desc limit ?",
         accountId, limit,
       ).map(toAction),
+    /** The account's actions with their stamps, newest first (the account page's activity). */
+    actionsOf: (accountId: number, limit = 20): ActionRowWithTimes[] =>
+      all<Omit<ActionRowWithTimes, "fields"> & { fields: string }>(
+        "select id, account_id, code, fields, status, signature, error, tx_hash, created_at, resolved_at from actions where account_id = ? order by created_at desc, rowid desc limit ?",
+        accountId, limit,
+      ).map((r) => ({ ...r, fields: JSON.parse(r.fields) as ActionField[] })),
     /** On startup: nothing from a previous run is still waiting on a device. */
     expireStaleActions: () =>
       run("update actions set status = 'expired', error = 'server restarted', resolved_at = ? where status in ('pending','approved')", new Date().toISOString()).changes,

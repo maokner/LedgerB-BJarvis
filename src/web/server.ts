@@ -1,10 +1,12 @@
 /**
- * The approval page behind every link (node:http, no framework). Routes, all keyed by the 64-hex token:
+ * The approval page behind every link, and the account page (node:http, no framework). Routes, the first set keyed by the 64-hex token:
  *   GET  /sign/:token          the page            GET  /sign/:token/job     what to sign (JSON)
  *   GET  /sign/:token/state    status for polling  POST /sign/:token/result  { kind, value } from the Ledger
  *   POST /sign/:token/reject   rejected on device  GET  /ledger.js           the browser bundle
  *   POST /sign/:token/log      { lines } from the page's step log, printed as "page <token8>: <line>" (1 per second, pending jobs only)
- * Plus optional extra routes (Google Calendar, src/calendar/google.ts; phone calls and MCP, src/voice/routes.ts), tried first,
+ *   GET  /                     the account page (src/web/dashboard.ts; its data comes from /api/*, src/web/account.ts, passed in as a route)
+ *   GET  /dashboard.js         its browser bundle
+ * Plus optional extra routes (the account API; Google Calendar, src/calendar/google.ts; phone calls and MCP, src/voice/routes.ts), tried first,
  * and websocket upgrades (Twilio media streams, src/voice/twilio.ts); an upgrade nobody takes is closed.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -16,14 +18,15 @@ import { ethRequest } from "../device/eth-verify.js";
 import type { RemoteDeviceManager } from "../device/remote.js";
 import { ACTION_TITLES } from "../types.js";
 import type { Routes, Upgrades } from "../voice/routes.js";
-import { buildClient } from "./bundle.js";
+import { type Bundle, buildClient } from "./bundle.js";
+import { dashboardPage } from "./dashboard.js";
 import { SECURITY_HEADERS as SECURITY } from "./headers.js";
 import { notFoundPage, page } from "./page.js";
 
 
 export interface WebServer {
   port: number;
-  /** Builds the browser bundle now, so the first visitor does not wait (and a broken build shows at start). */
+  /** Builds the browser bundles now, so the first visitor does not wait (and a broken build shows at start). */
   warm(): Promise<void>;
   close(): Promise<void>;
 }
@@ -31,9 +34,14 @@ export interface WebServer {
 export async function startWebServer(options: { db: Db; remote: RemoteDeviceManager; port: number; host?: string; log?: (line: string) => void; routes?: Routes; upgrades?: Upgrades }): Promise<WebServer> {
   const { db, remote } = options;
   const log = options.log ?? (() => {});
-  let bundle: Promise<string> | undefined;
+  const bundles = new Map<Bundle, Promise<string>>();
   const lastLog = new Map<string, number>();
-  const client = () => (bundle ??= buildClient().catch((err: unknown) => ((bundle = undefined), Promise.reject(err))));
+  /** The bundle for `which`, built once; a failed build is forgotten so the next request tries again. */
+  const client = (which: Bundle = "ledger") => {
+    let built = bundles.get(which);
+    if (!built) bundles.set(which, (built = buildClient(undefined, which).catch((err: unknown) => (bundles.delete(which), Promise.reject(err)))));
+    return built;
+  };
 
   /** The action's own status (actions table) is the truth; the job's status covers rows from before a restart. */
   function state(token: string) {
@@ -52,6 +60,8 @@ export async function startWebServer(options: { db: Db; remote: RemoteDeviceMana
     const path = new URL(req.url ?? "/", "http://x").pathname;
     if (options.routes && (await options.routes(req, res, path))) return;
     if (req.method === "GET" && path === "/ledger.js") return send(200, "text/javascript; charset=utf-8", await client());
+    if (req.method === "GET" && path === "/dashboard.js") return send(200, "text/javascript; charset=utf-8", await client("dashboard"));
+    if (req.method === "GET" && (path === "/" || path === "/index.html")) return send(200, "text/html; charset=utf-8", dashboardPage());
     const m = /^\/sign\/([0-9a-f]{64})(\/job|\/state|\/result|\/reject|\/log)?\/?$/.exec(path);
     const job = m && remote.job(m[1]!);
     if (!m || !job) return m && !m[2] ? send(404, "text/html; charset=utf-8", notFoundPage()) : json(404, { ok: false, error: "This link is not valid." });
@@ -110,7 +120,7 @@ export async function startWebServer(options: { db: Db; remote: RemoteDeviceMana
   });
   return {
     port: (server.address() as AddressInfo).port,
-    warm: async () => void (await client()),
+    warm: async () => void (await Promise.all([client("ledger"), client("dashboard")])),
     close: () =>
       new Promise((resolve) => {
         server.close(() => resolve());

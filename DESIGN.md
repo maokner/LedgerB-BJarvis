@@ -5,7 +5,8 @@ Hackathon build. Bare-bones on purpose: one Node process, one SQLite file, one s
 ## The demo
 
 1. Matt texts Jarvis on iMessage, at the number of a Photon line (`PHOTON_NUMBER`).
-   Jarvis introduces itself (`INTRO` in `src/agent/persona.ts`: an always-on assistant on its own computer, what it can do today, and that risky things wait on the Ledger), then asks for the tag he wants.
+   Jarvis introduces itself in three short sentences (`INTRO` in `src/agent/persona.ts`: an agent over text, what it can do today, and that money waits on the Ledger), then asks for the tag he wants in one more line.
+   Texts stay short by rule: one to three sentences, with two exceptions (a direct "what can you do" question, and a list the owner asked for).
    Matt says `@mokner`.
    Jarvis sends a sign-up link that works in Chrome on any computer (or, with his Ledger plugged into the server's Mac, asks the device directly).
    The device shows `Create account / Tag @mokner / Phone +14155550100`.
@@ -280,6 +281,22 @@ The Telegram channel is a bot that long-polls the Bot API (`TELEGRAM_BOT_TOKEN`)
 The local iMessage channel is Photon's `@photon-ai/imessage-kit` on a Mac (reads `~/Library/Messages/chat.db`, sends through Messages.app).
 It needs Full Disk Access and Automation for the terminal that runs it; only Matt can grant those, and nothing in tests may touch Messages.app or chat.db.
 The dev channel is an HTTP server (`POST /dev/message`, `GET /dev/outbox`) plus a REPL so the whole flow can be exercised with Speculos and no phone.
+
+## The account page (`src/web/dashboard.ts`, `src/web/account.ts`, `src/web/theme.ts`)
+
+The owner's command center, at `PUBLIC_URL/` and as a static copy on Vercel (`vercel.json`, built by `pnpm build:web` into `dist/site`; the API, the approval page and the Google routes are proxied to the server, so cookies and links stay on one origin).
+The approval page and the account page share one visual system (`src/web/theme.ts`): paper-white canvas, near-black ink, hairline borders, one typeface, monospace for the lines the Ledger itself shows, nothing decorative.
+
+Sign-in is the Ledger, nothing else.
+`POST /api/login/challenge` hands out a four-line personal message with a single-use nonce (5 minutes, in memory); the page has the Ethereum app sign it over WebHID (the same `connectEthereum` as the approval page, `src/web/ledger-connect.ts`); `POST /api/login` recovers the signer with ethers and looks it up as an account's address.
+A session is 32 random bytes in an HttpOnly, SameSite=Lax cookie; the database keeps only its SHA-256 (`sessions`), for 7 days, sliding.
+Every POST needs a JSON content type and, when the browser sends one, an Origin that is `PUBLIC_URL` or one of `DASHBOARD_ORIGINS`.
+The contract between the page and the API is `src/web/account-api.ts`.
+
+`GET /api/me` is the whole view: the tag and address, the balance on Base (left out when Base is slow), the Ledger policy, the connections in a fixed order (chat, Ledger, Google Calendar, phone calls, Amazon, DoorDash, each `connected`, `available` or `unavailable` with the actions the page may offer), friends, the last 20 actions, and the approval the Ledger is waiting on right now.
+The page's writes are small and go through the same code the chat uses: Google connect hands out `calendar.connectLink` with a `return_to` (the callback page then offers "Back to your account"), disconnect revokes, phone link and unlink are `src/phone.ts`, the policy is `changePolicy`.
+Deleting the account is not a write: `POST /api/delete` proposes `DEL` through `approvals.request`, exactly as the engine would, texts the owner the link, and answers with the approval page to sign on.
+Money and deletion therefore never happen from a session; the session can only ask the Ledger.
 
 ## Phone calls (`src/voice/`, `src/phone.ts`)
 

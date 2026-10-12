@@ -313,7 +313,7 @@ describe("remote onboarding (Ethereum mode, Ledger on another computer)", () => 
       await h.app.handleInbound(inbound(PHONES.gabriel, "hi"));
       const [hello] = h.ch.to(PHONES.gabriel);
       expect(hello).toBe(greeting("the Ethereum app", true));
-      expect(hello).toContain("tell me the tag you want, like @matt. Then you approve it on your Ledger with the Ethereum app open, from Chrome on any computer through a link I send.");
+      expect(hello).toContain("tell me the tag you want, like @matt. You then approve it on your Ledger through a link I send.");
       expect(hello).not.toMatch(/telegram|press start|plug your ledger into the mac/i);
       const token = await h.signUp(PHONES.gabriel, "@gabe");
       expect((await h.page(token, gabe)).status).toBe(200);

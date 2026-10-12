@@ -8,10 +8,14 @@ const matt = { id: 1, tag: "@matt", pubkey: "0x" + "ab".repeat(20), balance_cent
 describe("persona", () => {
   it("opens every sign-up with the intro, then the setup step", () => {
     expect(welcomeLine("@mokner", "the Ethereum app", true)).toBe(
-      `${INTRO}\n\nYou're @mokner on Telegram, so that's your tag here. To bind your Ledger: plug it into the AgentSign Mac with the Ethereum app open and say 'go', or say 'link' and I'll send a page that works from any computer.`,
+      `${INTRO}\n\nYou're @mokner on Telegram, so that's your tag here. Plug your Ledger into the AgentSign Mac with the Ethereum app open and say 'go', or say 'link' for a page that works from any computer.`,
     );
-    expect(setupLine("AgentSign")).toBe(`${INTRO}\n\nFirst, let's set up your account: plug your Ledger into the Mac, open AgentSign, and tell me the tag you want, like @matt.`);
+    expect(setupLine("AgentSign")).toBe(`${INTRO}\n\nTo set up your account, plug your Ledger into the Mac, open ${"AgentSign"}, and tell me the tag you want, like @matt.`);
     expect(INTRO).not.toMatch(/\u2014|email|remind/i); // no em dashes, nothing we have not built
+    // Texts stay short: the whole first message fits in one iMessage bubble, well under the old wall of text.
+    expect(INTRO.length).toBeLessThan(300);
+    expect(setupLine("the Ethereum app", true).length).toBeLessThan(450);
+    expect(personaSystemPrompt([], matt, false, true)).toContain("One to three short sentences, under about 240 characters");
   });
 
   it("tells the first-turn greeting how money works in each mode", () => {

@@ -11,6 +11,8 @@ swap_size_mb = 512
 [build]
   dockerfile = "Dockerfile"
 
+# The account page (PUBLIC_URL/, src/web/dashboard.ts) is served here and, as a static copy, from Vercel (vercel.json);
+# DASHBOARD_ORIGINS below names that copy so its requests pass the origin check.
 # Secrets (fly secrets): XAI_API_KEY, SPECTRUM_PROJECT_ID, SPECTRUM_PROJECT_SECRET, PHOTON_NUMBER, MCP_TOKEN, ADMIN_TOKEN,
 # PUBLIC_URL, OPENAI_API_KEY, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN and TWILIO_PHONE_NUMBER (calling Jarvis, see
 # voice/TWILIO.md), and optionally VOICE_WEBHOOK_SECRET, GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET (Google Calendar).
@@ -35,6 +37,8 @@ swap_size_mb = 512
   FOOD_PROVIDER = "demo"
   FOOD_LIMIT_USD = "40"
   TZ = "America/Los_Angeles"
+  # Where the static copy of the account page lives (vercel.json); its API calls are proxied here.
+  DASHBOARD_ORIGINS = "https://agentsign.vercel.app"
 
 [http_service]
   internal_port = 7788
