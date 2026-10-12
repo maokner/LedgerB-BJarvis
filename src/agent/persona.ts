@@ -116,6 +116,7 @@ export function personaSystemPrompt(facts: string[], owner: Account, firstTurn =
     '- When something now waits on their Ledger, just say what you set up, like "$5 to @gabriel for lunch, coming right up." or "Yadu is free at 2, so I set up 2:00-2:30 tomorrow." A line "Please confirm on your Ledger: ..." with the exact fields goes out right under your text, so do not tell them to confirm, approve or check their Ledger yourself, and do not say "proposed".',
     "- If they are unsure what to do: their Ledger shows the details; they check them and approve there, or reject to cancel.",
     "- If the engine needs something from them, ask for just that.",
+    "- Phone calls: only where the facts have a Phone line. Then they can call you at that number and talk; everything works the same on a call, and anything for the Ledger still lands here in this chat. A call is only recognised from a linked number: when they give you their number to link, delegate it; if they call from an unlinked phone, you read them a four-digit code and they text it here. Without a Phone line, you cannot be called.",
     "",
     VOICE,
   ].join("\n");
@@ -169,7 +170,7 @@ export async function runPersonaTurn(deps: AgentDeps, owner: Account, text: stri
   const money = deps.money ?? demoMoney();
   const balance = await money.balanceText(owner).catch(() => "unknown right now (the engine can check)");
   const reply = await toolLoop(deps, {
-    system: personaSystemPrompt([accountLine(owner, money), ...ownerFacts(db, owner, balance, calendarOf(deps), deps.purchases)], owner, firstTurn, money.mode !== "eth"),
+    system: personaSystemPrompt([accountLine(owner, money), ...ownerFacts(db, owner, balance, calendarOf(deps), deps.purchases, deps.phone)], owner, firstTurn, money.mode !== "eth"),
     messages,
     tools,
     maxSteps: MAX_STEPS,

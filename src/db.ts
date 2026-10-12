@@ -271,6 +271,12 @@ export function openDb(path = "data/agentsign.db") {
     setPolicy: (accountId: number, policy: string | null) => run("update accounts set policy = ? where id = ?", policy, accountId),
     primaryHandle: (accountId: number) =>
       one<{ handle: string }>("select handle from handles where account_id = ? order by is_primary desc, rowid limit 1", accountId)?.handle,
+    /** Every handle of an account, the primary one first (the Telegram id, then linked phone numbers). */
+    handlesOf: (accountId: number) => all<{ handle: string }>("select handle from handles where account_id = ? order by is_primary desc, rowid", accountId).map((h) => h.handle),
+    /** Binds another handle (a phone number for calls) to an account. False when some account already has it. */
+    addHandle: (accountId: number, handle: string) => run("insert or ignore into handles (handle, account_id, is_primary) values (?, ?, 0)", handle, accountId).changes > 0,
+    /** Drops a secondary handle; the primary one stays. */
+    removeHandle: (accountId: number, handle: string) => run("delete from handles where account_id = ? and handle = ? and is_primary = 0", accountId, handle).changes > 0,
     addCents: (accountId: number, cents: number) => run("update accounts set balance_cents = balance_cents + ? where id = ?", cents, accountId),
 
     /**

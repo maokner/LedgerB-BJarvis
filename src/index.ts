@@ -13,12 +13,13 @@ import { combineDeviceManagers, createDeviceManager, createEthDeviceManager, cre
 import { createAmazonMerchant } from "./amazon/browser.js";
 import { alwaysOrderedMerchant, demoMerchant, type Merchant } from "./merchant.js";
 import { baseMoney, demoMoney, formatEth } from "./money.js";
+import { createPhoneLinks, PHONE_RE, type PhoneLinks } from "./phone.js";
 import { createPurchases, type Purchases } from "./purchases.js";
 import { createTreasury } from "./treasury.js";
 import type { Channel } from "./types.js";
 import { startWebServer, type WebServer } from "./web/server.js";
-import { setupVoice } from "./voice/index.js";
-import type { Routes } from "./voice/routes.js";
+import { setupVoice, type VoiceSetup } from "./voice/index.js";
+import { normalizeHandle } from "./handles.js";
 
 config({ quiet: true });
 config({ path: join(homedir(), ".grok", ".env"), quiet: true });
@@ -55,7 +56,7 @@ const remote = mode === "eth" ? createRemoteDeviceManager({ db, publicUrl, log }
 const deviceManager = remote ? combineDeviceManagers([createEthDeviceManager({ log }), remote]) : createDeviceManager({ devices, log });
 let web: WebServer | undefined;
 // Google Calendar, phone call and MCP routes ride on the approval page; the latter are set once the app exists.
-let voiceRoutes: Routes | undefined;
+let voice: VoiceSetup | undefined;
 const googleClientId = process.env.GOOGLE_CLIENT_ID?.trim();
 const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim();
 if ((googleClientId || googleClientSecret) && !(googleClientId && googleClientSecret)) {
@@ -76,7 +77,8 @@ if (remote) {
   try {
     web = await startWebServer({
       db, remote, port: webPort, host: process.env.WEB_HOST || "127.0.0.1", log,
-      routes: async (req, res, path) => (await calendar.routes(req, res, path)) || (voiceRoutes ? voiceRoutes(req, res, path) : false),
+      routes: async (req, res, path) => (await calendar.routes(req, res, path)) || (voice ? voice.routes(req, res, path) : false),
+      upgrades: (req, socket, head, path) => voice?.upgrades(req, socket, head, path) ?? false,
     });
     await web.warm();
   } catch (err) {
@@ -100,8 +102,9 @@ else {
 }
 const model = createModel({ apiKey, model: process.env.XAI_MODEL || DEFAULT_MODEL, baseUrl: process.env.XAI_BASE_URL });
 const purchases = await setupPurchases();
-const app = createApp({ db, deviceManager, channel, model, log, money, calendar, purchases });
-if (web) voiceRoutes = setupVoice({ app, apiKey, publicUrl, dev: channelName === "dev", log });
+const phone = setupPhone();
+const app = createApp({ db, deviceManager, channel, model, log, money, calendar, purchases, phone });
+if (web) voice = setupVoice({ app, apiKey, publicUrl, dev: channelName === "dev", phone, log });
 else log("voice: phone calls and MCP need the web server (DEVICE_MODE=eth)");
 
 try {
@@ -211,6 +214,28 @@ async function setupPurchases(): Promise<Purchases | undefined> {
   return purchases;
 }
 
+/**
+ * Calling Jarvis (src/voice/twilio.ts): on when OPENAI_API_KEY is set and the web server runs. TWILIO_PHONE_NUMBER is
+ * the number owners call, as Jarvis tells them; TWILIO_AUTH_TOKEN signs Twilio's webhooks. See voice/TWILIO.md.
+ */
+function setupPhone(): PhoneLinks | undefined {
+  const key = process.env.OPENAI_API_KEY?.trim();
+  if (!key) return undefined;
+  if (!web) {
+    log("twilio: calling Jarvis needs the web server (DEVICE_MODE=eth), so it is off");
+    return undefined;
+  }
+  const raw = process.env.TWILIO_PHONE_NUMBER?.trim();
+  const number = raw ? normalizeHandle(raw) : undefined;
+  if (raw && !PHONE_RE.test(number!)) {
+    console.error(`TWILIO_PHONE_NUMBER must be the number in E.164 form, like +14155550100, not "${raw}".`);
+    process.exit(1);
+  }
+  if (!raw) log("twilio: TWILIO_PHONE_NUMBER unset, so Jarvis cannot tell owners which number to call");
+  if (!/^https:\/\//.test(publicUrl)) log("twilio: PUBLIC_URL is not https; Twilio needs https for the webhook and wss for the audio");
+  return createPhoneLinks({ db, number, log });
+}
+
 let stopping = false;
 async function shutdown(): Promise<void> {
   log("stopping (signal received)");
@@ -218,6 +243,7 @@ async function shutdown(): Promise<void> {
   stopping = true;
   log("shutting down");
   await channel.stop().catch((err) => log(`channel stop: ${(err as Error).message}`));
+  await voice?.close().catch((err: unknown) => log(`voice stop: ${(err as Error).message}`));
   await app.close();
   await purchases?.close().catch((err: unknown) => log(`amazon stop: ${(err as Error).message}`));
   await deviceManager.close().catch((err: unknown) => log(`device stop: ${(err as Error).message}`));

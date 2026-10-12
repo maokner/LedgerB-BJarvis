@@ -62,6 +62,13 @@ PURCHASE_LIMIT_USD="$(env_get PURCHASE_LIMIT_USD "$ENV_FILE")"
 PURCHASE_SHIPS_TO="$(env_get PURCHASE_SHIPS_TO "$ENV_FILE")"
 OPERATOR_TAG="$(env_get OPERATOR_TAG "$ENV_FILE")"
 OPERATOR_NAME="$(env_get OPERATOR_NAME "$ENV_FILE")"
+# Calling Jarvis (voice/TWILIO.md): OpenAI's realtime model behind a Twilio number.
+OPENAI_API_KEY="$(env_get OPENAI_API_KEY "$ENV_FILE")"
+OPENAI_REALTIME_MODEL="$(env_get OPENAI_REALTIME_MODEL "$ENV_FILE")"
+OPENAI_VOICE="$(env_get OPENAI_VOICE "$ENV_FILE")"
+TWILIO_ACCOUNT_SID="$(env_get TWILIO_ACCOUNT_SID "$ENV_FILE")"
+TWILIO_AUTH_TOKEN="$(env_get TWILIO_AUTH_TOKEN "$ENV_FILE")"
+TWILIO_PHONE_NUMBER="$(env_get TWILIO_PHONE_NUMBER "$ENV_FILE")"
 # The Amazon session travels as base64 of the exported file (see "Buying on Amazon" in DESIGN.md); a local path is read here.
 if [ -z "$AMAZON_STORAGE_STATE" ] && [ -n "$AMAZON_STORAGE_STATE_PATH" ]; then
   [ -f "$AMAZON_STORAGE_STATE_PATH" ] || die "AMAZON_STORAGE_STATE_PATH points to $AMAZON_STORAGE_STATE_PATH, which does not exist (run: pnpm amazon:login)"
@@ -79,6 +86,12 @@ done
 [ "${#missing[@]}" -eq 0 ] || die "missing in .env: ${missing[*]}"
 if { [ -n "$GOOGLE_CLIENT_ID" ] && [ -z "$GOOGLE_CLIENT_SECRET" ]; } || { [ -z "$GOOGLE_CLIENT_ID" ] && [ -n "$GOOGLE_CLIENT_SECRET" ]; }; then
   die "GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET go together in .env"
+fi
+if [ -n "$OPENAI_API_KEY" ]; then
+  for name in TWILIO_AUTH_TOKEN TWILIO_PHONE_NUMBER; do
+    [ -n "${!name}" ] || die "OPENAI_API_KEY is set (calling Jarvis) but $name is not; see voice/TWILIO.md"
+  done
+  case "$TWILIO_PHONE_NUMBER" in +[0-9]*) ;; *) die "TWILIO_PHONE_NUMBER must be E.164, like +14155550100" ;; esac
 fi
 
 if [ -z "$ADMIN_TOKEN" ]; then
@@ -136,7 +149,9 @@ names=(XAI_API_KEY TELEGRAM_BOT_TOKEN TELEGRAM_BOT_USERNAME MCP_TOKEN PUBLIC_URL
 # Buying on Amazon (optional): the treasury key, the session, and the knobs that are set.
 [ -n "$TREASURY_PRIVATE_KEY" ] && names+=(TREASURY_PRIVATE_KEY)
 [ -n "$AMAZON_STORAGE_STATE" ] && names+=(AMAZON_STORAGE_STATE)
-for name in AMAZON_MERCHANT AMAZON_DRY_RUN PURCHASE_LIMIT_USD PURCHASE_SHIPS_TO OPERATOR_TAG OPERATOR_NAME; do
+# Calling Jarvis (optional): the OpenAI key, Twilio's auth token and the number; after the deploy, scripts/twilio-setup.sh points the number here.
+[ -n "$OPENAI_API_KEY" ] && names+=(OPENAI_API_KEY TWILIO_AUTH_TOKEN TWILIO_PHONE_NUMBER)
+for name in OPENAI_REALTIME_MODEL OPENAI_VOICE TWILIO_ACCOUNT_SID AMAZON_MERCHANT AMAZON_DRY_RUN PURCHASE_LIMIT_USD PURCHASE_SHIPS_TO OPERATOR_TAG OPERATOR_NAME; do
   [ -n "${!name}" ] && names+=("$name")
 done
 # Values go through stdin, never argv or the terminal. --stage: the deploy below picks them up.

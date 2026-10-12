@@ -1,9 +1,15 @@
-/** What Jarvis knows and how he speaks on a phone call: the owner version and the stranger (sign-up) version. */
-import { nameOf, ownerFacts, type AgentDeps } from "../agent/agent.js";
-import { OWNER_TOOL_SPECS } from "../agent/tools.js";
+/**
+ * What Jarvis knows and how he speaks on a phone call: the owner version, the unlinked-number version (phone links,
+ * src/phone.ts) and the stranger (sign-up by phone) version for setups where the phone number is the account's handle.
+ */
+import { ownerFacts, type AgentDeps } from "../agent/agent.js";
+import { botMention, firstName } from "../agent/bot.js";
 import type { ToolSpec } from "../agent/xai.js";
 import type { Account, Db } from "../db.js";
 import { demoMoney } from "../money.js";
+
+/** Where the owner's texts land, as Jarvis should say it on the phone. */
+export const chatName = (handle: string | undefined) => (handle?.startsWith("tg:") ? "their Telegram chat with you" : "their texts");
 
 export const END_CALL: ToolSpec = {
   name: "end_call",
@@ -17,13 +23,14 @@ export const CHOOSE_TAG: ToolSpec = {
   parameters: { type: "object", properties: { tag: { type: "string", description: "The tag, like @gabe" } }, required: ["tag"] },
 };
 
-export const ownerVoiceTools = (): ToolSpec[] => [...OWNER_TOOL_SPECS, END_CALL];
 export const strangerVoiceTools = (): ToolSpec[] => [CHOOSE_TAG, END_CALL];
+export const unlinkedVoiceTools = (): ToolSpec[] => [END_CALL];
 
 const VOICE = [
   "How you sound: composed, dry, quietly witty, unfailingly helpful, like a good butler with a sense of humour. Never gushing.",
   "This is a phone call: short spoken sentences, one or two at a time, then let them talk. No lists, no markdown, no emoji, no URLs.",
   'Say numbers the way people say them ("five dollars", "two thirty tomorrow"). Never read addresses, hashes, links or long numbers aloud; at most "your address ending in" and the last four characters.',
+  "Asked what model you are or who built you, deflect lightly; never name a lab or a model.",
 ];
 
 const standing = (context: string) => (context.trim() ? ["", "Standing instructions from Matt, who runs AgentSign. Follow them unless they conflict with the rules above:", context.trim()] : []);
@@ -31,10 +38,13 @@ const standing = (context: string) => (context.trim() ? ["", "Standing instructi
 /** "0x1234abcd...9f3e" style, for an Ethereum address; undefined for anything else. */
 export const shortAddress = (pubkey: string) => (/^0x[0-9a-f]{40}$/i.test(pubkey) ? `${pubkey.slice(0, 6)}...${pubkey.slice(-4)}` : undefined);
 
-export function ownerInstructions(owner: Account, facts: string[], context = "", recent: string[] = []): string {
-  const name = nameOf(owner.tag);
+/** "the code is one two three four" is how the model should read it; the digits spaced out help. */
+const spokenCode = (code: string) => code.split("").join(" ");
+
+export function ownerInstructions(owner: Account, facts: string[], context = "", recent: string[] = [], chat = "their texts"): string {
+  const name = firstName(owner);
   return [
-    `You are Jarvis, the voice of AgentSign and the personal agent of ${owner.tag} (${name}). You are on a phone call with ${name}.`,
+    `You are Jarvis, the voice of AgentSign and the personal agent of ${owner.tag} (${name}). You are on a phone call with ${name}. Off the phone you text with them; this call is the same you.`,
     ...VOICE,
     "",
     "What you know right now:",
@@ -42,18 +52,39 @@ export function ownerInstructions(owner: Account, facts: string[], context = "",
     ...(recent.length ? ["Recent texts and notes with them, oldest first:", ...recent] : []),
     "",
     "How you work:",
-    "- Use your tools for anything that needs fresh data: balance, friends, calendar, notes, past payments, a friend's free time. Never invent balances, names, times or outcomes.",
-    `- You cannot move money, add calendar events, add friends or delete the account yourself. For those call propose_action; ${name} approves or rejects it on their Ledger, which shows exactly the fields you propose. Only one action can wait at a time.`,
-    `- While you set it up, say something like "I'll put that on your Ledger." Afterwards: it is on their Ledger and the details are in their texts. Never say it is sent, booked or done until you are told it was approved; you will be told during the call if it lands.`,
+    "- Use your tools for anything that needs fresh data: balance, friends, calendar, notes, past payments, a friend's free time, Amazon prices. Never invent balances, names, times or outcomes.",
+    `- Money and deleting the account always go to ${name}'s Ledger through propose_action; calendar events, friend requests and accepts go there only when their Ledger policy (in the facts) says so, otherwise propose_action does them at once and says so. Only one action can wait on the Ledger at a time.`,
+    `- When something goes to the Ledger: a message with the exact details and a link lands in ${chat}; the link opens a page that signs it on their Ledger from any computer. Say something like "I'll put that on your Ledger; the link is in your Telegram." Never say it is sent, booked, bought or done until you are told it was approved; you will be told during the call if it lands.`,
     "- Match names to tags (gabe -> @gabriel). If a tool says a name is unknown or ambiguous, ask.",
-    `- To meet a friend: ask their agent for free slots with message_agent, then propose CAL for the earliest slot that fits, With @friend, 30 minutes by default.`,
-    `- To tell a friend something (a thank you, a hello, a reply): send_note, in ${name}'s words. It is texted to them at once; nothing to approve. message_agent never passes anything on.`,
+    `- To meet a friend, call propose_meeting right away with their tag, a short title, the window ${name} is open to and the length (30 minutes unless they said). Their agent and you find a time free for both; the friend confirms by text; nothing goes on any Ledger. When a friend proposed a meeting (the facts list it), ${name}'s yes, no or other time is answer_meeting.`,
+    `- To tell a friend something (a thank you, a hello, a reply): send_note, in ${name}'s words. It reaches them at once; nothing to approve. message_agent only asks when a friend is free.`,
+    "- To buy something (only where the facts say Amazon is available): search_amazon, pick the best match within what they said, then propose_action BUY with the item id. Say the exact total before it goes to the Ledger.",
+    `- The Ledger policy: answer what needs their Ledger from the facts; change it with set_ledger_policy when ${name} asks.`,
+    `- Google Calendar: if ${name} asks to connect it, call connect_google_calendar; the link lands in ${chat}. Never ask for Google passwords.`,
+    `- Phone numbers: link_phone when ${name} gives you another number of theirs; unlink_phone only when asked.`,
     `- Use remember for lasting facts ${name} tells you.`,
-    "- Receipts need a photo: ask them to text it to this number.",
+    `- Receipts need a photo: ask them to send it in ${chat}.`,
     `- Only if ${name} clearly asks to delete or close their account, propose DEL. Their Ledger is the confirmation.`,
     "- Lines in square brackets that start with AgentSign are updates from the system, not the caller. Pass them on briefly.",
     "- When they say goodbye or are done, call end_call, then say one short goodbye.",
     `- Open the call by greeting ${name} by name in one short line, like "Jarvis here. What can I do for you, ${name}?"`,
+    ...standing(context),
+  ].join("\n");
+}
+
+/** A call from a number no account has linked: read the code, wait for the text, nothing else. */
+export function unlinkedInstructions(code: string, context = ""): string {
+  const bot = botMention();
+  return [
+    "You are Jarvis, the voice of AgentSign, a personal agent people text on Telegram and can call on the phone. This call comes from a phone number no account has linked yet, so you do not know who is calling.",
+    ...VOICE,
+    "",
+    `Their code is ${code}. Read it as single digits: "${spokenCode(code)}".`,
+    `- Open with one short line: Jarvis here, this number isn't linked yet; to link it, text the code ${spokenCode(code)} to Jarvis on Telegram (${bot}), and you'll stay on the line.`,
+    "- Repeat the code when asked. Keep it to the code; you cannot look anything up or do anything for them until the number is linked.",
+    "- If they have no AgentSign account at all: they open the bot on Telegram, press Start and set up with their Ledger first, then call back.",
+    "- Lines in square brackets that start with AgentSign are updates from the system, not the caller. When one says the number is linked, say so and ask what they would like to do.",
+    "- When they say goodbye or are done, call end_call, then say one short goodbye.",
     ...standing(context),
   ].join("\n");
 }
@@ -86,12 +117,16 @@ export function recentLines(db: Db, accountId: number, limit = 10): string[] {
     .map((m) => `- ${who[m.role]}: ${String(m.content).replace(/\s+/g, " ").slice(0, 240)}`);
 }
 
-/** Instructions for whoever is calling now: their account's facts, or the stranger flow. */
-export async function instructionsFor(deps: AgentDeps, owner: Account | undefined, context: string): Promise<string> {
+/**
+ * Instructions for whoever is calling now: their account's facts; with `code`, the unlinked-number flow; else the
+ * stranger (sign-up by phone) flow.
+ */
+export async function instructionsFor(deps: AgentDeps, owner: Account | undefined, context: string, code?: string): Promise<string> {
   const money = deps.money ?? demoMoney();
-  if (!owner) return strangerInstructions(money.appName, context);
+  if (!owner) return code ? unlinkedInstructions(code, context) : strangerInstructions(money.appName, context);
   const balance = await money.balanceText(owner).catch(() => "unknown right now (use get_balance)");
   const address = shortAddress(owner.pubkey);
-  const facts = [...ownerFacts(deps.db, owner, balance), ...(address ? [`Their address (never read it aloud): ${address}.`] : [])];
-  return ownerInstructions(owner, facts, context, recentLines(deps.db, owner.id));
+  const facts = [...ownerFacts(deps.db, owner, balance, deps.calendar, deps.purchases, deps.phone), ...(address ? [`Their address (never read it aloud): ${address}.`] : [])];
+  return ownerInstructions(owner, facts, context, recentLines(deps.db, owner.id), chatName(deps.db.primaryHandle(owner.id)));
 }
+

@@ -2,7 +2,7 @@
  * Exports the operator's Amazon session for the server (src/amazon/browser.ts): opens Chromium, lets the operator sign
  * in by hand, and saves the cookies as a Playwright storage state.
  *
- *   pnpm amazon:login                      # writes data/amazon-state.json
+ *   pnpm amazon:login                      # writes data/amazon-state.json once the sign-in lands (no keypress needed)
  *   pnpm amazon:login path/to/state.json
  *
  * The browser is the one the server runs (Playwright's Chromium, same user agent, locale and time zone), so Amazon sees
@@ -10,7 +10,6 @@
  */
 import { chmod, mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { createInterface } from "node:readline/promises";
 import { chromium } from "playwright";
 import { AMAZON, desktopUserAgent, signedInName } from "../src/amazon/pages.js";
 
@@ -31,22 +30,24 @@ const context = await browser.newContext({
 const page = await context.newPage();
 await page.goto(SIGN_IN, { waitUntil: "domcontentloaded" });
 
-const rl = createInterface({ input: process.stdin, output: process.stdout });
+// Waits for the sign-in to land instead of asking for a keypress: the nav greeting turns into "Hello, <name>".
+const deadline = Date.now() + 15 * 60_000;
 let name: string | undefined;
+console.log('Sign in to Amazon in the window (tick "Keep me signed in"). This waits up to 15 minutes and saves the session on its own.');
 try {
-  for (;;) {
-    await rl.question('Sign in to Amazon in the window (tick "Keep me signed in"), then press Enter here ');
-    await page.goto(`${AMAZON}/`, { waitUntil: "domcontentloaded" });
-    const greeting = await page.locator("#nav-link-accountList-nav-line-1, #nav-link-accountList").first().innerText({ timeout: 15_000 }).catch(() => "");
-    if ((name = signedInName(greeting))) break;
-    console.log(`Amazon still says "${greeting.split("\n")[0] || "nothing"}", so the session is not signed in yet. Finish signing in and press Enter again (Ctrl-C to give up).`);
-    await page.goto(SIGN_IN, { waitUntil: "domcontentloaded" });
+  while (!name) {
+    if (Date.now() > deadline) throw new Error("gave up waiting for the sign-in after 15 minutes");
+    await new Promise((r) => setTimeout(r, 2_000));
+    if (page.isClosed()) throw new Error("the browser window was closed before the sign-in finished");
+    // Still on a sign-in, MFA or verification page: keep waiting.
+    if (/\/ap\/|\/ax\//.test(page.url())) continue;
+    const greeting = await page.locator("#nav-link-accountList-nav-line-1, #nav-link-accountList").first().innerText({ timeout: 5_000 }).catch(() => "");
+    name = signedInName(greeting);
   }
   await mkdir(dirname(file), { recursive: true });
   await context.storageState({ path: file });
   await chmod(file, 0o600);
 } finally {
-  rl.close();
   await browser.close();
 }
 

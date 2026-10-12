@@ -32,6 +32,7 @@ export function engineSystemPrompt(facts: string[], owner: Account): string {
     `- To send a friend a note (a thank you, a hello, a reply, anything ${name} wants to say to them), call send_note with the note written as ${name} would say it, a sentence or two. It reaches the friend at once as a text from their own Jarvis; nothing to approve. message_agent only asks when a friend is free and never passes anything on to them.`,
     `- To buy something (only where the facts say Amazon is available): search_amazon first, pick the item that fits best within what ${name} said (cheapest match unless they said otherwise), then propose_action BUY with Item <its id>. It is paid in USDC on Base from ${name}'s address (the facts show the balance; a little ETH covers the fee). The tool quotes the exact total and refuses anything over the limit; if it does, report the price and the limit, do not look for ways around it. Never buy more than one thing per request, and never without a search result's id.`,
     `- Use remember for lasting facts ${name} tells you.`,
+    `- Phone (only where the facts have a Phone line): when ${name} gives their own number to link ("my number is", "link my phone"), call link_phone with it; unlink_phone only when asked. A four-digit code from a call is handled before you see it.`,
     `- Only if ${name} clearly asks to delete, close or reset their account, propose DEL (no fields). Never for anything less. Their Ledger is the confirmation, so do not ask them to confirm first.`,
     "",
     "How to report:",
@@ -78,6 +79,7 @@ export function engineTools(deps: AgentDeps, owner: Account, hooks: EngineHooks 
     log: deps.log,
     money: deps.money,
     purchases: deps.purchases,
+    phone: deps.phone,
     deliver: hooks.deliver,
     attach: hooks.attach ?? (async (text) => void (await deps.channel.send(db.primaryHandle(owner.id)!, text))),
     onProposed: (action) => {
@@ -123,7 +125,7 @@ export async function runEngine(deps: AgentDeps, owner: Account, task: EngineTas
     ...(task.images.length ? { images: task.images } : {}),
   };
   return toolLoop(deps, {
-    system: engineSystemPrompt(ownerFacts(db, owner, balance, calendarOf(deps), deps.purchases), owner),
+    system: engineSystemPrompt(ownerFacts(db, owner, balance, calendarOf(deps), deps.purchases, deps.phone), owner),
     messages: [user],
     tools,
     maxSteps: MAX_STEPS,

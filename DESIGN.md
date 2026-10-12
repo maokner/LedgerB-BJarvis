@@ -199,6 +199,19 @@ The older iMessage channel is Photon's `@photon-ai/imessage-kit` (reads `~/Libra
 It needs Full Disk Access and Automation for the terminal that runs it; only Matt can grant those, and nothing in tests may touch Messages.app or chat.db.
 The dev channel is an HTTP server (`POST /dev/message`, `GET /dev/outbox`) plus a REPL so the whole flow can be exercised with Speculos and no phone.
 
+## Phone calls (`src/voice/`, `src/phone.ts`)
+
+Owners can call Jarvis on a Twilio number (`voice/TWILIO.md` has the setup).
+Twilio POSTs the call to `/twilio/voice` (signed with the account's auth token, checked in `src/voice/twilio.ts`); the TwiML answer connects the call's audio to the websocket `/twilio/media` with a one-time token naming the caller, so a stream can only claim a number the signed webhook saw.
+The media stream (G.711 mu-law) is piped both ways into one OpenAI realtime session (`src/voice/session.ts`) configured for `audio/pcmu`, with server VAD and caller transcription; a barge-in clears Twilio's playback buffer and truncates the model's last item to what the caller heard.
+The session's tools are the engine's own (`engineTools`), plus `end_call`: a call runs exactly the harness a text runs, so read-only tools run at once and anything for the Ledger becomes an approval whose text and link land in the owner's Telegram chat; the session tells the caller the outcome if it lands during the call.
+The transcript is stored as a system note in the chat history when the call ends.
+The same session drives the older xAI realtime path (`src/voice/webhook.ts`, `provider: "xai"`), and `pnpm voice:chat` types to it in text mode.
+
+Identity is the caller ID. An account's handle is its Telegram id, so an owner links their phone number once (`src/phone.ts`): by telling Jarvis the number on Telegram (`link_phone`), or by calling from it: an unlinked caller hears a four-digit code, texts it to the bot (a deterministic shortcut in `src/app.ts`, no model call), and the live call switches to the owner's tools.
+Linked numbers are secondary rows in `handles` (unique, so a number belongs to one account); the Phone line in the owner facts lists them and the number to call.
+Hidden caller IDs are declined with a spoken line.
+
 ## Non-goals
 
 No smart-contract escrow for purchases (the treasury is a wallet the operator controls; the refund path is code, not a contract), no buying elsewhere than Amazon, no delivery to anywhere but the operator's own address, no two-way Google Calendar sync (Google events are read and AgentSign events are mirrored there; edits made on Google are not pulled back into the table), no multi-process agent federation, no Flex/Stax UI, no tokens other than ETH yet. Keep every file short and obvious.

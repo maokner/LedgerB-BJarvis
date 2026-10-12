@@ -4,17 +4,18 @@
  *   GET  /sign/:token/state    status for polling  POST /sign/:token/result  { kind, value } from the Ledger
  *   POST /sign/:token/reject   rejected on device  GET  /ledger.js           the browser bundle
  *   POST /sign/:token/log      { lines } from the page's step log, printed as "page <token8>: <line>" (1 per second, pending jobs only)
- * Plus optional extra routes (Google Calendar, src/calendar/google.ts; phone calls and MCP, src/voice/routes.ts), tried first.
+ * Plus optional extra routes (Google Calendar, src/calendar/google.ts; phone calls and MCP, src/voice/routes.ts), tried first,
+ * and websocket upgrades (Twilio media streams, src/voice/twilio.ts); an upgrade nobody takes is closed.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
+import type { AddressInfo, Socket } from "node:net";
 import { txLink } from "../chain.js";
 import type { Db } from "../db.js";
 import type { EthAnswer } from "../device/eth-tx.js";
 import { ethRequest } from "../device/eth-verify.js";
 import type { RemoteDeviceManager } from "../device/remote.js";
 import { ACTION_TITLES } from "../types.js";
-import type { Routes } from "../voice/routes.js";
+import type { Routes, Upgrades } from "../voice/routes.js";
 import { buildClient } from "./bundle.js";
 import { SECURITY_HEADERS as SECURITY } from "./headers.js";
 import { notFoundPage, page } from "./page.js";
@@ -27,7 +28,7 @@ export interface WebServer {
   close(): Promise<void>;
 }
 
-export async function startWebServer(options: { db: Db; remote: RemoteDeviceManager; port: number; host?: string; log?: (line: string) => void; routes?: Routes }): Promise<WebServer> {
+export async function startWebServer(options: { db: Db; remote: RemoteDeviceManager; port: number; host?: string; log?: (line: string) => void; routes?: Routes; upgrades?: Upgrades }): Promise<WebServer> {
   const { db, remote } = options;
   const log = options.log ?? (() => {});
   let bundle: Promise<string> | undefined;
@@ -96,6 +97,12 @@ export async function startWebServer(options: { db: Db; remote: RemoteDeviceMana
       log(`web: ${req.method} ${req.url?.slice(0, 18)}... failed: ${(err as Error).message}`);
       if (!res.headersSent) res.writeHead(500, { "content-type": "application/json" }).end('{"ok":false,"error":"Something went wrong."}');
     });
+  });
+  server.on("upgrade", (req, socket: Socket, head: Buffer) => {
+    const path = new URL(req.url ?? "/", "http://x").pathname;
+    if (options.upgrades?.(req, socket, head, path)) return;
+    socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+    socket.destroy();
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);

@@ -24,6 +24,8 @@
     "@ledgerhq/hw-transport-webhid": "^6.36.0",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "@photon-ai/imessage-kit": "3.0.0",
+    "@spectrum-ts/core": "12.10.1",
+    "@spectrum-ts/imessage": "12.10.1",
     "better-sqlite3": "^12.5.0",
     "buffer": "^6.0.3",
     "dotenv": "^17.2.3",

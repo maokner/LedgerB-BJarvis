@@ -1,6 +1,7 @@
 # Jarvis
 
 Jarvis is a personal agent on Telegram.
+You can also call it on the phone.
 It can send your money, manage your calendar and buy things for you.
 Your Ledger must sign each risky action before the action occurs.
 
@@ -15,6 +16,12 @@ If you reject the action, the server cancels it.
 
 The actions are: send ETH on Base, buy an item on Amazon with USDC, add a calendar event (with a copy on Google Calendar), send or accept a friend request, and create or delete the account.
 The agents of two friends can speak with each other to find a meeting time and to pass notes.
+
+You can also call Jarvis on a Twilio number and speak.
+OpenAI's realtime model speaks as Jarvis with the same tools a text has.
+The call is recognised by your caller ID after you link your number once.
+Each action for the Ledger goes to your Telegram chat as usual, and Jarvis tells you on the call when you approve it.
+See `voice/TWILIO.md`.
 
 ## The Ledger
 
@@ -50,6 +57,7 @@ src/device/                  the Ledger: Ethereum app over USB, signature verifi
 src/web/                     the approval page (WebHID in the browser)
 src/agent/                   persona, engine, tools, the xAI client
 src/channels/                Telegram (and a local dev channel for tests)
+src/voice/, src/phone.ts     phone calls: Twilio audio into OpenAI's realtime model, linked phone numbers
 src/money.ts, chain.ts       ETH and USDC on Base
 src/purchases.ts, merchant.ts, amazon/, treasury.ts   purchases on Amazon
 src/calendar/, meetings.ts   calendars and meetings between friends
@@ -65,6 +73,7 @@ device-app/                  a custom Nano S Plus app for the offline demo mode
 ```sh
 pnpm install
 cp .env.example .env     # XAI_API_KEY, TELEGRAM_BOT_TOKEN, PUBLIC_URL (https, for the approval page)
+                         # calls: OPENAI_API_KEY, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER (voice/TWILIO.md)
 pnpm start               # Telegram
 pnpm dev                 # local dev channel, no phone
 pnpm test
@@ -72,3 +81,4 @@ pnpm test
 
 To deploy to Fly.io, run `scripts/fly-deploy.sh`.
 The live bot is `agentsign-jarvis`.
+To point the Twilio number at it, run `scripts/twilio-setup.sh`.

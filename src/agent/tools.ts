@@ -15,6 +15,7 @@ import { ACTION_TITLES, type Action, type ActionField, type Channel } from "../t
 import type { ToolSpec } from "./xai.js";
 import { txLink } from "../chain.js";
 import { demoMoney, type Money } from "../money.js";
+import type { PhoneLinks } from "../phone.js";
 import type { Purchases } from "../purchases.js";
 import { botMention } from "./bot.js";
 
@@ -162,6 +163,20 @@ export const PURCHASE_TOOL_SPECS: ToolSpec[] = [
     parameters: { type: "object", properties: { query: { type: "string", description: "What to look for, like 'trident gum' or 'usb-c cable 6ft'" } }, required: ["query"] },
   },
   { name: "list_purchases", description: "The owner's Amazon purchases through you: item, total, status (ordered, refunded, in progress), order number.", parameters: none },
+];
+
+/** Only where phone calls are set up (src/phone.ts). */
+export const PHONE_TOOL_SPECS: ToolSpec[] = [
+  {
+    name: "link_phone",
+    description: "Link a phone number to the owner, so a call from it is recognised as them. Only the owner's own number, when they give it. Takes effect at once.",
+    parameters: { type: "object", properties: { number: { type: "string", description: "The number with its country code, like +1 415 555 0100" } }, required: ["number"] },
+  },
+  {
+    name: "unlink_phone",
+    description: "Unlink one of the owner's phone numbers (the facts list them). Only when they ask.",
+    parameters: { type: "object", properties: { number: { type: "string" } }, required: ["number"] },
+  },
 ];
 
 export const PEER_TOOL_SPECS: ToolSpec[] = [
@@ -318,8 +333,10 @@ export function ownerTools(deps: {
   money?: Money;
   /** Buying on Amazon with ETH, where the server is set up for it. */
   purchases?: Purchases;
+  /** Phone numbers for calls, where the server is set up for them. */
+  phone?: PhoneLinks;
 }): Tools {
-  const { db, approvals, owner, calendar, purchases } = deps;
+  const { db, approvals, owner, calendar, purchases, phone } = deps;
   const money = deps.money ?? demoMoney();
   const meetings: MeetingDeps = { db, calendar, channel: deps.channel, log: deps.log, approvals, deliver: deps.deliver, onProposed: deps.onProposed };
   const settled = (line: string) => {
@@ -335,10 +352,17 @@ export function ownerTools(deps: {
     return target;
   };
   return {
-    specs: purchases ? [...OWNER_TOOL_SPECS, ...PURCHASE_TOOL_SPECS] : OWNER_TOOL_SPECS,
+    specs: [...OWNER_TOOL_SPECS, ...(purchases ? PURCHASE_TOOL_SPECS : []), ...(phone ? PHONE_TOOL_SPECS : [])],
     async run(name, args) {
       const me = db.account(owner.id)!;
       switch (name) {
+        case "link_phone":
+        case "unlink_phone": {
+          if (!phone) return "Error: phone calls are not set up on this server.";
+          const r = name === "link_phone" ? phone.link(me.id, String(args.number ?? "")) : phone.unlink(me.id, String(args.number ?? ""));
+          if (!r.ok) return `Error: ${r.reason}`;
+          return settled(name === "link_phone" ? `Linked ${r.handle}: calls from it are now ${me.tag}.${phone.number ? ` They can call ${phone.number}.` : ""}` : `Unlinked ${r.handle}.`);
+        }
         case "search_amazon":
           if (!purchases) return "Error: buying on Amazon is not available on this server.";
           return purchases.search(String(args.query ?? ""));

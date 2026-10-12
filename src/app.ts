@@ -7,6 +7,7 @@ import { createApprovals, PENDING_ERROR, type Approvals } from "./approvals.js";
 import { createCalendar, type Calendar } from "./calendar/google.js";
 import type { Account, Db } from "./db.js";
 import { demoMoney, type Money } from "./money.js";
+import type { PhoneLinks } from "./phone.js";
 import type { Purchases } from "./purchases.js";
 import { normalizeHandle, parseTag } from "./handles.js";
 import { answerMeeting } from "./meetings.js";
@@ -51,6 +52,8 @@ export interface AppOptions {
   calendar?: Calendar;
   /** Buying on Amazon with ETH (src/purchases.ts). Default: not available. */
   purchases?: Purchases;
+  /** Phone numbers linked for calls (src/phone.ts). Default: calls are not available. */
+  phone?: PhoneLinks;
 }
 
 /**
@@ -115,6 +118,7 @@ export function createApp(options: AppOptions): App & AppVoiceHooks & { approval
   const app = money.appName;
   const calendar = options.calendar ?? createCalendar({ db, log });
   const purchases = options.purchases;
+  const phone = options.phone;
   const approvals = createApprovals({
     db, deviceManager, channel, titles: ACTION_TITLES, log, signTimeoutMs: options.signTimeoutMs, money, calendar,
     onSettled: purchases ? (action, status, extra) => purchases.onSettled(action, status, extra) : undefined,
@@ -122,7 +126,7 @@ export function createApp(options: AppOptions): App & AppVoiceHooks & { approval
   // Purchases a previous run left in flight continue now that approvals have expired their stale actions.
   purchases?.resume();
   const personaModel = (options.personaModel ?? process.env.XAI_PERSONA_MODEL ?? DEFAULT_PERSONA_MODEL) || undefined;
-  const deps: AgentDeps = { db, model, approvals, channel, log, money, personaModel, calendar, purchases };
+  const deps: AgentDeps = { db, model, approvals, channel, log, money, personaModel, calendar, purchases, phone };
   const createTitle = money.mode === "eth" ? "Verify address" : "Create account";
   const turns = new Map<string, Promise<void>>();
   /** Onboarding approvals in flight, by handle: the tag and device they claimed. */
@@ -334,6 +338,19 @@ export function createApp(options: AppOptions): App & AppVoiceHooks & { approval
     return true;
   }
 
+  /** A four-digit code read out on a call from an unknown number: texting it here links that number to this account. */
+  async function phoneCodeShortcut(account: Account, message: InboundMessage, handle: string): Promise<boolean> {
+    const code = message.text.trim();
+    if (!phone || !/^\d{4}$/.test(code) || !phone.pending(code)) return false;
+    db.addMessage(account.id, "user", { role: "user", content: message.text });
+    const r = phone.claim(account.id, code);
+    const reply = r.ok ? `Linked ${r.handle} to your account. Calls from it are you now${phone.number ? `; call me at ${phone.number} any time` : ""}.` : `Couldn't link that number: ${r.reason}`;
+    await channel.react(message.id, r.ok ? "👍" : "🤔");
+    await channel.send(handle, reply);
+    db.addMessage(account.id, "assistant", { role: "assistant", content: reply });
+    return true;
+  }
+
   /** An owner turn: the persona answers, delegating to the engine; proposals ride along in the same text. */
   async function ownerTurn(account: Account, message: InboundMessage, handle: string): Promise<void> {
     const out = turnOutbox((text) => channel.send(handle, text));
@@ -367,6 +384,7 @@ export function createApp(options: AppOptions): App & AppVoiceHooks & { approval
     if (await acceptShortcut(account, message, handle)) return;
     if (await meetingShortcut(account, message, handle)) return;
     if (await googleShortcut(account, message, handle)) return;
+    if (await phoneCodeShortcut(account, message, handle)) return;
     return ownerTurn(account, message, handle);
   }
 

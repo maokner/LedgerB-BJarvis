@@ -105,7 +105,7 @@ describe("realtime bridge", () => {
     const outputs = ws.of("conversation.item.create").filter((m) => m.item.type === "function_call_output");
     expect(outputs.map((m) => m.item.call_id)).toEqual(["c1", "c2"]);
     expect(JSON.parse(outputs[0].item.output)).toContain("Balance: $250.00");
-    expect(JSON.parse(outputs[1].item.output)).toMatch(/^Proposed: Send money.*NOT done.*texted to them/);
+    expect(JSON.parse(outputs[1].item.output)).toMatch(/^Proposed: Send money.*NOT done.*went to their texts/);
     await h.app.whenIdle();
     expect(h.to(PHONES.matt)).toContain("Please confirm on your Ledger: Send money: To @yadu, Amount $2.00");
     ws.event({ type: "response.created" });

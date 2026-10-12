@@ -3,6 +3,7 @@ import type { Approvals } from "../approvals.js";
 import { describeAction } from "../actions.js";
 import { createCalendar, type Calendar } from "../calendar/google.js";
 import type { Money } from "../money.js";
+import type { PhoneLinks } from "../phone.js";
 import { purchasesFact, type Purchases } from "../purchases.js";
 import type { Account, Db } from "../db.js";
 import { formatDay, localNow, TIMEZONE } from "../format.js";
@@ -26,6 +27,8 @@ export interface AgentDeps {
   calendar?: Calendar;
   /** Buying on Amazon with ETH (src/purchases.ts). Unset: not available. */
   purchases?: Purchases;
+  /** Phone numbers linked for calls (src/phone.ts). Unset: calls are not available. */
+  phone?: PhoneLinks;
 }
 
 /** The calendar behind these deps; without one, AgentSign's own events table alone. */
@@ -48,7 +51,7 @@ export function claimsProposal(text: string): boolean {
 }
 
 /** What both the persona and the engine know about the owner at the start of a turn, as prompt lines. */
-export function ownerFacts(db: Db, owner: Account, balance: string, calendar?: Calendar, purchases?: Purchases): string[] {
+export function ownerFacts(db: Db, owner: Account, balance: string, calendar?: Calendar, purchases?: Purchases, phone?: PhoneLinks): string[] {
   const friends = db.friendsOf(owner.id);
   const google = calendar?.connection(owner.id);
   const googleLine = !calendar
@@ -76,8 +79,20 @@ export function ownerFacts(db: Db, owner: Account, balance: string, calendar?: C
     `Ledger policy, ${describePolicy(policyOf(owner))} ${owner.tag} can change it by asking (set_ledger_policy): a preset (relaxed, standard, strict) or one thing at a time.`,
     googleLine,
     purchasesFact(purchases, owner),
+    phoneFact(phone, owner),
     notes.length ? `Notes saved about ${owner.tag}:\n${notes.join("\n")}` : "",
   ].filter(Boolean);
+}
+
+/** The phone line of the facts: the number to call and which of the owner's numbers are linked (recognised as them). */
+export function phoneFact(phone: PhoneLinks | undefined, owner: Account): string {
+  if (!phone) return "";
+  const linked = phone.numbersOf(owner.id);
+  const call = phone.number ? `${owner.tag} can call you at ${phone.number} and talk instead of typing; a call can do everything a text can.` : "Phone calls are set up but have no number yet.";
+  const numbers = linked.length
+    ? `Linked phone numbers (calls from these are ${owner.tag}): ${linked.join(", ")}. They can unlink one (unlink_phone).`
+    : `No phone number is linked yet, so a call from ${owner.tag} is not recognised. To link one: they tell you their number (link_phone), or they call and text back the four-digit code they hear.`;
+  return `Phone: ${call} ${numbers}`;
 }
 
 function peerSystemPrompt(target: Account, fromTag: string): string {

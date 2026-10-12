@@ -6,7 +6,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import WebSocket from "ws";
 import type { AppVoiceHooks } from "../app.js";
 import { normalizeHandle } from "../handles.js";
-import { runVoiceSession, type VoiceTurn } from "./session.js";
+import { persistCall, runVoiceSession, type VoiceTurn } from "./session.js";
 
 const TOLERANCE_S = 5 * 60;
 const KEEP_CALLS = 20;
@@ -73,15 +73,6 @@ export function createVoice(o: VoiceOptions) {
     if (res instanceof Error || !res.ok) log(`voice ${callId}: hangup failed: ${res instanceof Error ? res.message : res.status}`);
   }
 
-  /** The call's words go into the account's chat history, so the text agent knows what was said. */
-  function persist(call: VoiceCallRecord): void {
-    const account = db.accountByHandle(call.caller);
-    const lines = call.turns.filter((t) => t.who === "caller" || t.who === "jarvis").map((t) => `${t.who === "caller" ? "User" : "Jarvis"} said: ${t.text}`);
-    if (!account || !lines.length) return;
-    const minutes = Math.max(1, Math.round((Date.parse(call.endedAt!) - Date.parse(call.startedAt)) / 60_000));
-    db.addMessage(account.id, "system", { role: "system", content: `Phone call (${minutes} min):\n${lines.join("\n").slice(-3000)}` });
-  }
-
   function join(callId: string, caller: string): void {
     const record: VoiceCallRecord = { id: callId, caller, tag: db.accountByHandle(caller)?.tag, startedAt: new Date().toISOString(), turns: [] };
     calls.unshift(record);
@@ -101,7 +92,7 @@ export function createVoice(o: VoiceOptions) {
       record.endedAt = new Date().toISOString();
       record.tag = db.accountByHandle(caller)?.tag ?? record.tag;
       log(`voice ${callId}: call with ${caller} ended after ${record.turns.length} turn(s)`);
-      persist(record);
+      persistCall(db, caller, record.turns, record.startedAt, record.endedAt);
     });
   }
 

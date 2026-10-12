@@ -9,6 +9,7 @@ import { createApp } from "../src/app.js";
 import { openDb } from "../src/db.js";
 import type { Calendar } from "../src/calendar/google.js";
 import type { Money } from "../src/money.js";
+import { createPhoneLinks, type PhoneLinks } from "../src/phone.js";
 import type { Purchases } from "../src/purchases.js";
 import type { Action, Channel, DeviceInfo, DeviceManager, InboundMessage, SignResult } from "../src/types.js";
 
@@ -134,9 +135,12 @@ export function harness(
     calendar?: Calendar;
     /** Buying on Amazon, built on the harness's own DB and channel. */
     purchases?: (ctx: { db: ReturnType<typeof openDb>; channel: Pick<Channel, "send">; log: (line: string) => void }) => Purchases;
+    /** Phone calls: true for links on the harness's DB with this number to call, or ready-made links. */
+    phone?: boolean | string | PhoneLinks;
   } = {},
 ) {
   const db = extra.db ?? openDb(":memory:");
+  const phone = typeof extra.phone === "object" ? extra.phone : extra.phone ? createPhoneLinks({ db, number: typeof extra.phone === "string" ? extra.phone : "+19406447419" }) : undefined;
   const { manager, devices } = fakeDevices(deviceCount);
   const ch = fakeChannel();
   const scripted = scriptedModel();
@@ -152,6 +156,7 @@ export function harness(
     money: extra.money,
     calendar: extra.calendar,
     purchases: extra.purchases?.({ db, channel: ch.channel, log }),
+    phone,
   });
   const deliver = async (message: InboundMessage) => {
     await app.handleInbound(message);
@@ -171,7 +176,7 @@ export function harness(
     db.requestFriend(a, b);
     db.acceptFriend(a, b);
   };
-  return { db, app, devices, manager, ...ch, ...scripted, logs, send, deliver, onboard, befriend };
+  return { db, app, devices, manager, phone, ...ch, ...scripted, logs, send, deliver, onboard, befriend };
 }
 
 /** A Ledger running the Ethereum app, played by an ethers Wallet. Answers in hw-app-eth's shapes. */

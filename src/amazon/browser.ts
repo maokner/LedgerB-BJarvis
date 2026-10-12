@@ -142,30 +142,56 @@ export function createAmazonMerchant(o: AmazonOptions): AmazonMerchant {
     await page.close().catch(() => {});
   }
 
-  /** After Buy Now: the checkout page (classic or new), or the Buy Now side sheet's iframe. */
+  /** "No thanks" on the Prime trial pages Amazon puts between Buy Now and the checkout (several layouts). */
+  const primeDecline = (page: Page) =>
+    firstVisible([
+      page.locator("#prime-decline-button, #prime-interstitial-nothanks-button, #prime-declineCTA, a.prime-nothanks-button, #prime-nothanks-button"),
+      page.getByRole("link", { name: /^no,? thanks/i }),
+      page.getByRole("button", { name: /^no,? thanks/i }),
+      page.locator("a, button, input[type='submit'], span.a-button-text").filter({ hasText: /^\s*No,? thanks\s*$/i }),
+    ]);
+
+  /**
+   * After Buy Now: the checkout page (classic or new) once it shows its order button, or the Buy Now side sheet's
+   * iframe. Buy Now goes through redirect hops (/checkout/entry/...) and sometimes a Prime trial page first; those are
+   * declined once and the wait goes on, so a page that merely has a checkout URL is not mistaken for the checkout.
+   */
   async function waitForCheckout(page: Page): Promise<Page | Frame> {
     const deadline = Date.now() + timeoutMs;
     let declinedPrime = false;
+    let onCheckout = false;
     while (Date.now() < deadline) {
-      checkBlock(page.url(), "", "check out");
-      if (isCheckoutUrl(page.url())) {
-        // A Prime sign-up page can sit between Buy Now and checkout; say no once and keep waiting.
-        const noThanks = declinedPrime ? undefined : await firstVisible([page.locator("#prime-interstitial-nothanks-button, #prime-declineCTA, a.prime-nothanks-button")]);
-        if (noThanks) {
-          declinedPrime = true;
-          log("amazon: declining the Prime offer");
-          await noThanks.click();
-        } else {
-          await page.waitForLoadState("domcontentloaded");
-          checkBlock(page.url(), await page.content(), "check out");
+      const url = page.url();
+      checkBlock(url, "", "check out");
+      if (isCheckoutUrl(url) && !/\/checkout\/entry\//i.test(url)) {
+        onCheckout = true;
+        if (!declinedPrime) {
+          const noThanks = await primeDecline(page);
+          if (noThanks) {
+            declinedPrime = true;
+            log("amazon: declining the Prime offer");
+            await noThanks.click().catch(() => {});
+            await page.waitForLoadState("domcontentloaded").catch(() => {});
+            await sleep(500);
+            continue;
+          }
+        }
+        if (await placeOrderButton(page)) {
+          checkBlock(url, await page.content().catch(() => ""), "check out");
           return page;
         }
       }
-      // The side sheet ("turbo checkout") keeps the product page and opens the order summary in an iframe.
-      const frame = await (await page.$("#turbo-checkout-iframe, iframe[name='turbo-checkout-iframe']"))?.contentFrame();
+      // The side sheet ("turbo checkout") keeps the product page and opens the order summary in an iframe. Any page call
+      // can throw while Buy Now is still navigating: that is "not yet".
+      const frame = await page
+        .$("#turbo-checkout-iframe, iframe[name='turbo-checkout-iframe']")
+        .then((el) => el?.contentFrame())
+        .catch(() => null);
       if (frame && frame.url() !== "about:blank") return frame;
       await sleep(300);
     }
+    // On a checkout page without an order button: hand it back so the caller reports what it saw (with a screenshot).
+    if (onCheckout) return page;
     throw new NotBuyable("Buy Now didn't open a checkout page");
   }
 

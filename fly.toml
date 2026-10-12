@@ -12,7 +12,9 @@ swap_size_mb = 512
   dockerfile = "Dockerfile"
 
 # Secrets (fly secrets): XAI_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_BOT_USERNAME, MCP_TOKEN, ADMIN_TOKEN, PUBLIC_URL,
+# OPENAI_API_KEY, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN and TWILIO_PHONE_NUMBER (calling Jarvis, see voice/TWILIO.md),
 # and optionally VOICE_WEBHOOK_SECRET, GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET (Google Calendar).
+# Phone calls are websockets through the Fly proxy (wss://agentsign-jarvis.fly.dev/twilio/media); nothing else to open.
 [env]
   CHANNEL = "telegram"
   DEVICE_MODE = "eth"
