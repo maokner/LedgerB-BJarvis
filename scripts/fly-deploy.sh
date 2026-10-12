@@ -46,6 +46,13 @@ fly auth whoami >/dev/null 2>&1 || die "not logged in to Fly.io; run: fly auth l
 
 XAI_API_KEY="$(env_get XAI_API_KEY "$ENV_FILE")"
 [ -n "$XAI_API_KEY" ] || XAI_API_KEY="$(env_get XAI_API_KEY "$HOME/.grok/.env")"
+# The channel is the one fly.toml deploys (CHANNEL in [env]): photon (iMessage on Photon) or telegram.
+CHANNEL="$(sed -nE 's/^[[:space:]]*CHANNEL[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' fly.toml | head -n 1)"
+CHANNEL="${CHANNEL:-photon}"
+case "$CHANNEL" in photon|telegram) ;; *) die "fly.toml sets CHANNEL = \"$CHANNEL\"; deploy photon or telegram" ;; esac
+SPECTRUM_PROJECT_ID="$(env_get SPECTRUM_PROJECT_ID "$ENV_FILE")"
+SPECTRUM_PROJECT_SECRET="$(env_get SPECTRUM_PROJECT_SECRET "$ENV_FILE")"
+PHOTON_NUMBER="$(env_get PHOTON_NUMBER "$ENV_FILE")"
 TELEGRAM_BOT_TOKEN="$(env_get TELEGRAM_BOT_TOKEN "$ENV_FILE")"
 TELEGRAM_BOT_USERNAME="$(env_get TELEGRAM_BOT_USERNAME "$ENV_FILE")"
 MCP_TOKEN="$(env_get MCP_TOKEN "$ENV_FILE")"
@@ -79,8 +86,10 @@ if [ -n "$TREASURY_PRIVATE_KEY" ] && [ -z "$AMAZON_STORAGE_STATE" ] && [ "$AMAZO
 fi
 PUBLIC_URL="https://${APP}.fly.dev"
 
+required=(XAI_API_KEY MCP_TOKEN)
+if [ "$CHANNEL" = telegram ]; then required+=(TELEGRAM_BOT_TOKEN TELEGRAM_BOT_USERNAME); else required+=(SPECTRUM_PROJECT_ID SPECTRUM_PROJECT_SECRET); fi
 missing=()
-for name in XAI_API_KEY TELEGRAM_BOT_TOKEN TELEGRAM_BOT_USERNAME MCP_TOKEN; do
+for name in "${required[@]}"; do
   [ -n "${!name}" ] || missing+=("$name")
 done
 [ "${#missing[@]}" -eq 0 ] || die "missing in .env: ${missing[*]}"
@@ -101,17 +110,24 @@ if [ -z "$ADMIN_TOKEN" ]; then
   echo "ADMIN_TOKEN was not set; generated one and appended it to .env"
 fi
 
-# The token must belong to the bot named in TELEGRAM_BOT_USERNAME. curl reads the URL from stdin so the token stays out of ps.
-me="$(printf 'url = "https://api.telegram.org/bot%s/getMe"\n' "$TELEGRAM_BOT_TOKEN" | curl -sS --max-time 15 -K - || true)"
-case "$me" in
-  *'"ok":true'*) ;;
-  *) die "Telegram rejected TELEGRAM_BOT_TOKEN (getMe failed)" ;;
-esac
-bot="$(printf '%s' "$me" | sed -nE 's/.*"username":"([^"]+)".*/\1/p')"
-want="${TELEGRAM_BOT_USERNAME#@}"
-[ "$(printf '%s' "$bot" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]')" ] \
-  || die "TELEGRAM_BOT_TOKEN belongs to @$bot, but TELEGRAM_BOT_USERNAME is @$want"
-echo "ok: app $APP in $ORG/$REGION, bot @$bot, PUBLIC_URL $PUBLIC_URL"
+if [ "$CHANNEL" = telegram ]; then
+  # The token must belong to the bot named in TELEGRAM_BOT_USERNAME. curl reads the URL from stdin so the token stays out of ps.
+  me="$(printf 'url = "https://api.telegram.org/bot%s/getMe"\n' "$TELEGRAM_BOT_TOKEN" | curl -sS --max-time 15 -K - || true)"
+  case "$me" in
+    *'"ok":true'*) ;;
+    *) die "Telegram rejected TELEGRAM_BOT_TOKEN (getMe failed)" ;;
+  esac
+  bot="$(printf '%s' "$me" | sed -nE 's/.*"username":"([^"]+)".*/\1/p')"
+  want="${TELEGRAM_BOT_USERNAME#@}"
+  [ "$(printf '%s' "$bot" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]')" ] \
+    || die "TELEGRAM_BOT_TOKEN belongs to @$bot, but TELEGRAM_BOT_USERNAME is @$want"
+  where="bot @$bot"
+else
+  # The Spectrum credentials are checked by the server at start (it exits with a clear line in fly logs if Photon refuses them).
+  [ -n "$PHOTON_NUMBER" ] || echo "warning: PHOTON_NUMBER is not in .env, so Jarvis cannot tell people which number to text"
+  where="iMessage on Photon${PHOTON_NUMBER:+ at $PHOTON_NUMBER}"
+fi
+echo "ok: app $APP in $ORG/$REGION, $where, PUBLIC_URL $PUBLIC_URL"
 
 # ---- app ----------------------------------------------------------------------------------------------------
 step "App $APP"
@@ -142,7 +158,9 @@ fi
 
 # ---- secrets ------------------------------------------------------------------------------------------------
 step "Secrets"
-names=(XAI_API_KEY TELEGRAM_BOT_TOKEN TELEGRAM_BOT_USERNAME MCP_TOKEN PUBLIC_URL ADMIN_TOKEN)
+names=(XAI_API_KEY MCP_TOKEN PUBLIC_URL ADMIN_TOKEN)
+if [ "$CHANNEL" = telegram ]; then names+=(TELEGRAM_BOT_TOKEN TELEGRAM_BOT_USERNAME); else names+=(SPECTRUM_PROJECT_ID SPECTRUM_PROJECT_SECRET); fi
+[ -n "$PHOTON_NUMBER" ] && names+=(PHOTON_NUMBER)
 [ -n "$VOICE_WEBHOOK_SECRET" ] && names+=(VOICE_WEBHOOK_SECRET)
 # Google Calendar: the OAuth client's redirect URI must be $PUBLIC_URL/google/callback (see the Google Calendar section in DESIGN.md).
 [ -n "$GOOGLE_CLIENT_ID" ] && names+=(GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET)
@@ -160,9 +178,9 @@ echo "staged: ${names[*]}"
 
 # ---- deploy -------------------------------------------------------------------------------------------------
 step "Deploy"
-# Only one process may long-poll a bot token: the server on this Mac has to be stopped first.
+# Only one server may hold the channel (the Spectrum stream, or a bot token's long poll): the one on this Mac has to be stopped first.
 if [ "${FORCE:-0}" != 1 ] && { lsof -nP -iTCP:7788 -sTCP:LISTEN >/dev/null 2>&1 || pgrep -f "tsx src/index.ts" >/dev/null 2>&1; }; then
-  die "a local AgentSign server is still running (port 7788 or 'tsx src/index.ts'). Stop it first (Ctrl-C in its terminal): two servers polling one bot conflict. FORCE=1 skips this check."
+  die "a local AgentSign server is still running (port 7788 or 'tsx src/index.ts'). Stop it first (Ctrl-C in its terminal): two servers on one channel both answer every message. FORCE=1 skips this check."
 fi
 fly deploy -a "$APP" --ha=false
 fly scale count 1 -a "$APP" --yes
@@ -177,7 +195,8 @@ for _ in $(seq 1 30); do
 done
 [ "$code" = 404 ] || die "$PUBLIC_URL/sign/nope answered ${code:-nothing}, expected 404; see fly logs -a $APP"
 echo "ok: the approval page answers ($PUBLIC_URL/sign/nope -> 404)"
-echo "Open @$bot in Telegram and say hi. Following the logs (Ctrl-C to stop; the app keeps running):"
+if [ "$CHANNEL" = telegram ]; then hello="Open @$bot in Telegram and say hi."; else hello="Text Jarvis${PHOTON_NUMBER:+ at $PHOTON_NUMBER} on iMessage and say hi."; fi
+echo "$hello Following the logs (Ctrl-C to stop; the app keeps running):"
 
 step "Logs"
 exec fly logs -a "$APP"

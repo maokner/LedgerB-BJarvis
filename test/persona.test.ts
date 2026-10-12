@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { INTRO, personaSystemPrompt, plain, setupLine, welcomeLine } from "../src/agent/persona.js";
+import { botMention, channelLabel, chatName, joinHint } from "../src/agent/bot.js";
+import { INTRO, personaSystemPrompt, plain, setupLine, strangerSystemPrompt, welcomeLine } from "../src/agent/persona.js";
 import type { Account } from "../src/db.js";
 
 const matt = { id: 1, tag: "@matt", pubkey: "0x" + "ab".repeat(20), balance_cents: 25_000, username: "mokner", display_name: "Matt Okner" } as Account;
@@ -29,6 +30,36 @@ describe("persona", () => {
     expect(prompt).toContain("swear only if they do");
     expect(prompt).toContain("Do not end every text with \"anything else?\"");
     expect(prompt).toContain('Never the pattern "not just X, but Y"');
+  });
+
+  it("speaks of iMessage on Photon: the chat, how friends join, and no Telegram anywhere", () => {
+    const before = { CHANNEL: process.env.CHANNEL, PHOTON_NUMBER: process.env.PHOTON_NUMBER };
+    process.env.CHANNEL = "photon";
+    process.env.PHOTON_NUMBER = "+14155550199";
+    try {
+      const imessageOwner = { ...matt, username: null, display_name: null } as Account;
+      const prompt = personaSystemPrompt([], imessageOwner, false, false);
+      expect(prompt).toContain("You text with Matt on iMessage.");
+      expect(prompt).toContain("friends join when they text Jarvis at +14155550199 on iMessage and set up with their own Ledger");
+      expect(prompt).toContain("say they need to text Jarvis at +14155550199 on iMessage and set up with their own Ledger first");
+      expect(prompt).not.toMatch(/telegram|press start/i);
+      const stranger = strangerSystemPrompt({ appName: "the Ethereum app", link: true }, true);
+      expect(stranger).toContain("an agent on AgentSign that people text on iMessage");
+      expect(stranger).not.toMatch(/telegram|press start/i);
+      expect([botMention(), chatName("+14155550001"), chatName(undefined), chatName("tg:1")]).toEqual([
+        "Jarvis at +14155550199",
+        "their iMessage chat with you",
+        "their iMessage chat with you",
+        "their Telegram chat with you",
+      ]);
+      delete process.env.PHOTON_NUMBER;
+      expect(joinHint()).toBe("text Jarvis on iMessage and set up with their own Ledger");
+      process.env.CHANNEL = "dev";
+      expect([chatName("+14155550001"), channelLabel()]).toEqual(["their texts", undefined]);
+    } finally {
+      for (const [k, v] of Object.entries(before)) if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
   });
 
   it("plain() leaves chat text clean for Telegram", () => {

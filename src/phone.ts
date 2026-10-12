@@ -1,7 +1,7 @@
 /**
- * Phone numbers for calls. An account is a Telegram user plus a Ledger; a call arrives with a caller ID, so the owner
- * links their number to the account once. Two ways in:
- *   - from a call: an unknown number hears a short code; the owner texts that code to Jarvis on Telegram (src/app.ts)
+ * Phone numbers for calls. A call arrives with a caller ID, looked up as a handle: on iMessage the account's handle is
+ * the owner's number already; a Telegram account (or an extra number) links its number to the account once. Two ways in:
+ *   - from a call: an unknown number hears a short code; the owner texts that code to Jarvis (src/app.ts)
  *   - from a text: "link my number +1 415 ..." runs the engine's link_phone tool (src/agent/tools.ts)
  * A number belongs to at most one account (handles are unique), so nobody can take over a linked number.
  */

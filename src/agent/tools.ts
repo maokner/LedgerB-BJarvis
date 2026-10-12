@@ -17,7 +17,8 @@ import { txLink } from "../chain.js";
 import { demoMoney, type Money } from "../money.js";
 import type { PhoneLinks } from "../phone.js";
 import type { Purchases } from "../purchases.js";
-import { botMention } from "./bot.js";
+import { channelKind, joinHint } from "./bot.js";
+import { normalizeHandle } from "../handles.js";
 
 export interface Tools {
   specs: ToolSpec[];
@@ -206,15 +207,32 @@ export async function freeBusy(calendar: Calendar, accountId: number, args: Reco
   return JSON.stringify({ timezone: TIMEZONE, from: r.from, to: r.to, busy, ...(warning ? { warning } : {}) });
 }
 
+/** "+1 (415) 555-0100" or "gabe@icloud.com": a phone number or email someone could text from, else undefined. */
+function handleOf(raw: string): string | undefined {
+  const s = raw.trim();
+  const digits = s.replace(/\D/g, "").length;
+  if (/^\+?[\d\s().-]+$/.test(s) && (digits >= 10 || (s.startsWith("+") && digits >= 8))) return normalizeHandle(s);
+  if (/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(s)) return normalizeHandle(s);
+  return undefined;
+}
+
 /**
- * Resolve "gabe", "@gabriel" or "Gabriel" to an account: exact tag, exact Telegram username, then prefix matches among
- * friends, then everyone; must be unambiguous.
+ * Resolve "gabe", "@gabriel" or "Gabriel" to an account: exact tag, exact Telegram username, an exact phone number or
+ * email (the iMessage handle they signed up from), then prefix matches among friends, then everyone; must be unambiguous.
  */
 export function resolveTag(db: Db, owner: Account, raw: string): Account | string {
   const name = raw.toLowerCase().replace(/[^a-z0-9_]/g, "");
   if (name.length < 2) return `Error: "${raw}" is not a tag. Ask the owner who they mean.`;
   const exact = db.accountByTag(`@${name}`) ?? db.accountByUsername(name);
   if (exact) return exact;
+  // A number or an email is matched exactly, never by prefix: digits that start alike are different people.
+  const handle = handleOf(raw);
+  if (handle) {
+    return (
+      db.accountByHandle(handle) ??
+      `Error: nobody on AgentSign has the number or email "${raw}". If they are not on AgentSign yet, tell the owner: they need to ${joinHint()} first. Otherwise ask the owner for their @tag.`
+    );
+  }
   const prefix = (a: string, b: string) => {
     let i = 0;
     while (i < a.length && a[i] === b[i]) i++;
@@ -233,8 +251,8 @@ export function resolveTag(db: Db, owner: Account, raw: string): Account | strin
     if (found.length > 1) return `Error: "${raw}" could be ${found.map((a) => a.tag).join(" or ")}. Ask the owner which one.`;
   }
   return (
-    `Error: nobody on AgentSign has the tag or Telegram username "${raw}". If they are not on AgentSign yet, tell the owner: ` +
-    `they need to open ${botMention()} on Telegram and press Start first. Otherwise ask the owner for the exact @tag.`
+    `Error: nobody on AgentSign has the tag ${channelKind() === "telegram" ? "or Telegram username " : ""}"${raw}". If they are not on AgentSign yet, tell the owner: ` +
+    `they need to ${joinHint()} first. Otherwise ask the owner for the exact @tag.`
   );
 }
 

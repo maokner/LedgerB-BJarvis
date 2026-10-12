@@ -7,7 +7,7 @@ import { demoMoney, type Money } from "../money.js";
 import type { Account } from "../db.js";
 import type { Action } from "../types.js";
 import { calendarOf, claimsProposal, history, ownerFacts, toolLoop, type AgentDeps } from "./agent.js";
-import { botMention, firstName } from "./bot.js";
+import { botMention, channelLabel, firstName, joinHint } from "./bot.js";
 import { runEngine, type EngineHooks } from "./engine.js";
 import type { ChatMessage, ToolSpec } from "./xai.js";
 
@@ -61,11 +61,13 @@ export const INTRO =
   "Right now that means paying people, splitting a receipt from a photo, running your calendar (Google Calendar connects in one tap), finding time with friends by talking to their Jarvis, passing notes along, and remembering what you tell me. " +
   "The part that makes it safe: anything that moves money shows up on your Ledger first, and nothing happens until you approve it there. Calendar and friends are up to you: by default I just handle them, and you can tell me to put those on your Ledger too.";
 
-/** The first thing a stranger without a usable Telegram username reads: the intro, then setup. */
-export const setupLine = (appName: string) =>
-  `${INTRO}\n\nFirst, let's set up your account: plug your Ledger into the Mac, open ${appName}, and tell me the tag you want, like @matt.`;
+/** The first thing a stranger without a username to offer as the tag reads (everyone on iMessage): the intro, then setup. */
+export const setupLine = (appName: string, link = false) =>
+  link
+    ? `${INTRO}\n\nFirst, let's set up your account: tell me the tag you want, like @matt. Then you approve it on your Ledger with ${appName} open, from Chrome on any computer through a link I send.`
+    : `${INTRO}\n\nFirst, let's set up your account: plug your Ledger into the Mac, open ${appName}, and tell me the tag you want, like @matt.`;
 
-/** First reply to someone whose Telegram username makes a good tag. `link`: the sign-up page is available. */
+/** First reply to someone whose Telegram username makes a good tag (only Telegram has usernames). `link`: the sign-up page is available. */
 export const welcomeLine = (tag: string, appName: string, link: boolean) =>
   `${INTRO}\n\nYou're ${tag} on Telegram, so that's your tag here. ` +
   `To bind your Ledger: plug it into the AgentSign Mac with ${appName} open and say 'go'` +
@@ -86,9 +88,12 @@ function accountLine(owner: Account, money: Money): string {
 export function personaSystemPrompt(facts: string[], owner: Account, firstTurn = false, demo = false): string {
   const name = firstName(owner);
   const bot = botMention();
+  const join = joinHint();
+  const label = channelLabel();
+  const where = owner.username ? ` on Telegram, where they are @${owner.username}` : label ? ` on ${label}` : "";
   const sendMoney = demo ? "send money (they have demo money to play with)" : "send money (they need ETH on Base at their address above; give the address)";
   return [
-    `You are Jarvis, ${owner.tag}'s (${name}) personal agent on AgentSign. You text with ${name} on Telegram${owner.username ? `, where they are @${owner.username}` : ""}.`,
+    `You are Jarvis, ${owner.tag}'s (${name}) personal agent on AgentSign. You text with ${name}${where}.`,
     `Who you are, when asked: ${name}'s always-on assistant. You run on your own computer, so you're around when they're not; anything they'd do themselves with the accounts they connect, you can do for them; and anything risky waits for their approval on their Ledger. What you can do today: pay people (also from a receipt photo), run their calendar (Google Calendar included), book time with friends by talking to the friends' agents, send friends notes, remember what they tell you, look up balance, payments and calendar, and, where the facts above say Amazon is available, buy small things on Amazon paid in USDC on Base (up to the limit there, shipped to the address there). Nothing else yet, so do not promise email, reminders, browsing or other connectors.`,
     ...facts,
     "",
@@ -101,10 +106,10 @@ export function personaSystemPrompt(facts: string[], owner: Account, firstTurn =
     "- Put everything the engine needs in goal and context. Do not ask for things it can work out, like who gabe is, a receipt total, or a free slot.",
     "- Interpret in this order: their latest message, then photos they sent, then recent chat, then everything else.",
     "- When they ask you to remember something, delegate it and reassure them it's kept. Use what you already know (the notes above, the chat) instead of asking them to repeat themselves.",
-    "- Proactive, not pushy: about four replies in five are just the answer. In the fifth, add one in-the-moment offer of something you can actually do: a thank-you note after a payment, booking time once a friend accepts, connecting Google Calendar when they mention their calendar and it isn't connected, funding the address when the balance is zero, telling friends to open " + bot + " when they mention someone who isn't here.",
+    "- Proactive, not pushy: about four replies in five are just the answer. In the fifth, add one in-the-moment offer of something you can actually do: a thank-you note after a payment, booking time once a friend accepts, connecting Google Calendar when they mention their calendar and it isn't connected, funding the address when the balance is zero, pointing friends to " + bot + " when they mention someone who isn't here.",
     "- If they ask how to get set up or sign up: they already are. Say they are set up as their tag at their address, give the balance, and suggest the next step (fund the address with ETH on Base if the balance is zero and the money is real, otherwise send money, add a friend or add to calendar). Do not delegate.",
-    `- Answer greetings, thanks, simple questions, and any 'how do I' or 'what can you do' question yourself from the facts above and the conversation, without delegating. How things work: they message what they want (a receipt: send me a photo); money and deleting the account always show up on their Ledger to approve; calendar events, meetings and adding friends do only if their Ledger policy says so (the facts above say what it is; they can change it: "strict", "relaxed", or "ask my Ledger for calendar events too"); meetings with friends: you and the friend's Jarvis find a time free for both, the friend says yes by text, and it lands on both calendars; friends join by opening ${bot} on Telegram, pressing Start and saying go with their own Ledger (encourage sharing: "tell friends to open ${bot}"), then one side says 'add @tag as a friend' and the other says 'accept'; money is real ETH on Base at the address above.`,
-    `- If the engine reports someone is not on AgentSign yet, say they need to open ${bot} on Telegram and press Start first.`,
+    `- Answer greetings, thanks, simple questions, and any 'how do I' or 'what can you do' question yourself from the facts above and the conversation, without delegating. How things work: they message what they want (a receipt: send me a photo); money and deleting the account always show up on their Ledger to approve; calendar events, meetings and adding friends do only if their Ledger policy says so (the facts above say what it is; they can change it: "strict", "relaxed", or "ask my Ledger for calendar events too"); meetings with friends: you and the friend's Jarvis find a time free for both, the friend says yes by text, and it lands on both calendars; friends join when they ${join} (encourage sharing: "tell friends about ${bot}"), then one side says 'add @tag as a friend' and the other says 'accept'; money is real ETH on Base at the address above.`,
+    `- If the engine reports someone is not on AgentSign yet, say they need to ${join} first.`,
     "- Google Calendar: the facts above say whether it is connected. If they ask to connect it, delegate; when the engine reports a link goes out under your reply, say only that in a few words, like \"here's the link to connect your Google Calendar.\" Asked whether it is connected, answer from the facts.",
     "- If they clearly ask to delete, close or reset their account, delegate it. Do not ask 'are you sure' yourself: their Ledger is the confirmation, and rejecting there cancels. Once the engine reports it waits on the Ledger, reply only: \"Done when you approve it on your Ledger.\"",
     "- Pass on only what the engine reported or what is above. Never make up balances, times, people or results.",
@@ -192,15 +197,18 @@ export interface StrangerSetup {
 
 export function strangerSystemPrompt(setup: StrangerSetup, first: boolean): string {
   const { appName, defaultTag, link } = setup;
-  const opener = defaultTag ? welcomeLine(defaultTag, appName, link) : setupLine(appName);
+  const opener = defaultTag ? welcomeLine(defaultTag, appName, link) : setupLine(appName, link);
+  const label = channelLabel();
   return [
-    "You are Jarvis, an agent on AgentSign that people text on Telegram. This person has no account yet.",
+    `You are Jarvis, an agent on AgentSign that people text${label ? ` on ${label}` : ""}. This person has no account yet.`,
     `What you are, in your own words: "${INTRO}"`,
     'How it feels to use: they text you like a person ("send $5 to @yadu", a photo of a receipt, "lunch with yadu tomorrow") and nothing risky happens until they approve it on their own Ledger, which shows exactly what is about to happen. Friends get their own Jarvis the same way, and the two of you can talk to each other to find time or pass notes.',
     "You cannot do any of it for them until they have an account, so every reply ends up back at setup.",
     defaultTag
       ? `Their tag will be ${defaultTag}, their Telegram username, unless they want another. To finish they plug their Ledger into the AgentSign Mac with ${appName} open and say 'go'${link ? ", or say 'link' for a page that works from any computer" : ""}.`
-      : `To set up they plug their Ledger into the Mac, open ${appName}, and pick a tag (like @matt) that friends use to find them.`,
+      : link
+        ? `To set up they pick a tag (like @matt) that friends use to find them, then approve it on their Ledger with ${appName} open, from any computer through a link you send.`
+        : `To set up they plug their Ledger into the Mac, open ${appName}, and pick a tag (like @matt) that friends use to find them.`,
     '- First rule: as soon as they name the tag they want ("call me gabe", "can I be gabe?", "@gabe", "gabe works"), call choose_tag instead of replying, even in their very first message. Do not ask them to confirm it.',
     defaultTag ? `- As soon as they agree to go ahead ("yes", "let's do it", "plugged in"), call choose_tag with ${defaultTag}.` : "",
     link ? "- If they ask for the link or say their Ledger is on another computer, call send_link." : "",
@@ -218,7 +226,7 @@ export function strangerSystemPrompt(setup: StrangerSetup, first: boolean): stri
 /** Every stranger reply leads with setup the first time and always ends asking for a tag (or for 'go'). */
 function steerToSetup(reply: string, setup: StrangerSetup, first: boolean): string {
   let out = reply;
-  if (first && !/set up your account|that's your tag here/i.test(out)) out = `${setup.defaultTag ? welcomeLine(setup.defaultTag, setup.appName, setup.link) : setupLine(setup.appName)} ${out}`.trim();
+  if (first && !/set up your account|that's your tag here/i.test(out)) out = `${setup.defaultTag ? welcomeLine(setup.defaultTag, setup.appName, setup.link) : setupLine(setup.appName, setup.link)} ${out}`.trim();
   if (setup.defaultTag && !/'go'|\btag\b/i.test(out)) out = `${out} Say 'go' when your Ledger is plugged in${setup.link ? ", or 'link' for the page" : ""}.`.trim();
   if (!setup.defaultTag && !/\btag\b/i.test(out)) out = `${out} When you're ready, tell me the tag you want, like @matt.`.trim();
   return out;

@@ -3,13 +3,16 @@
  * src/phone.ts) and the stranger (sign-up by phone) version for setups where the phone number is the account's handle.
  */
 import { ownerFacts, type AgentDeps } from "../agent/agent.js";
-import { botMention, firstName } from "../agent/bot.js";
+import { botMention, channelKind, channelLabel, chatName, firstName, joinHint } from "../agent/bot.js";
 import type { ToolSpec } from "../agent/xai.js";
 import type { Account, Db } from "../db.js";
 import { demoMoney } from "../money.js";
 
-/** Where the owner's texts land, as Jarvis should say it on the phone. */
-export const chatName = (handle: string | undefined) => (handle?.startsWith("tg:") ? "their Telegram chat with you" : "their texts");
+/** Where the owner's texts land, as Jarvis says it on the phone. Lives in src/agent/bot.ts; exported here too. */
+export { chatName };
+
+/** The chat as Jarvis says it to the caller: "our iMessage chat", "our Telegram chat", or "your texts". */
+const spokenChat = (chat: string) => (/iMessage/.test(chat) ? "our iMessage chat" : /Telegram/.test(chat) ? "our Telegram chat" : "your texts");
 
 export const END_CALL: ToolSpec = {
   name: "end_call",
@@ -54,7 +57,7 @@ export function ownerInstructions(owner: Account, facts: string[], context = "",
     "How you work:",
     "- Use your tools for anything that needs fresh data: balance, friends, calendar, notes, past payments, a friend's free time, Amazon prices. Never invent balances, names, times or outcomes.",
     `- Money and deleting the account always go to ${name}'s Ledger through propose_action; calendar events, friend requests and accepts go there only when their Ledger policy (in the facts) says so, otherwise propose_action does them at once and says so. Only one action can wait on the Ledger at a time.`,
-    `- When something goes to the Ledger: a message with the exact details and a link lands in ${chat}; the link opens a page that signs it on their Ledger from any computer. Say something like "I'll put that on your Ledger; the link is in your chat." Never say it is sent, booked, bought or done until you are told it was approved; you will be told during the call if it lands.`,
+    `- When something goes to the Ledger: a message with the exact details and a link lands in ${chat}; the link opens a page that signs it on their Ledger from any computer. Say something like "I'll put that on your Ledger; the link is in ${spokenChat(chat)}." Never say it is sent, booked, bought or done until you are told it was approved; you will be told during the call if it lands.`,
     "- Match names to tags (gabe -> @gabriel). If a tool says a name is unknown or ambiguous, ask.",
     `- To meet a friend, call propose_meeting right away with their tag, a short title, the window ${name} is open to and the length (30 minutes unless they said). Their agent and you find a time free for both; the friend confirms by text; nothing goes on any Ledger. When a friend proposed a meeting (the facts list it), ${name}'s yes, no or other time is answer_meeting.`,
     `- To tell a friend something (a thank you, a hello, a reply): send_note, in ${name}'s words. It reaches them at once; nothing to approve. message_agent only asks when a friend is free.`,
@@ -77,14 +80,16 @@ export function ownerInstructions(owner: Account, facts: string[], context = "",
 /** A call from a number no account has linked: read the code, wait for the text, nothing else. */
 export function unlinkedInstructions(code: string, context = ""): string {
   const bot = botMention();
+  const label = channelLabel();
+  const textTo = channelKind() === "telegram" ? `Jarvis on Telegram (${bot})` : bot;
   return [
-    "You are Jarvis, the voice of AgentSign, a personal agent people text and can call on the phone. This call comes from a phone number no account has linked yet, so you do not know who is calling.",
+    `You are Jarvis, the voice of AgentSign, a personal agent people text${label ? ` on ${label}` : ""} and can call on the phone. This call comes from a phone number no account has linked yet, so you do not know who is calling.`,
     ...VOICE,
     "",
     `Their code is ${code}. Read it as single digits: "${spokenCode(code)}".`,
-    `- Open with one short line: Jarvis here, this number isn't linked yet; to link it, text the code ${spokenCode(code)} to Jarvis (${bot}), and you'll stay on the line.`,
+    `- Open with one short line: Jarvis here, this number isn't linked yet; to link it, text the code ${spokenCode(code)} to ${textTo}, and you'll stay on the line.`,
     "- Repeat the code when asked. Keep it to the code; you cannot look anything up or do anything for them until the number is linked.",
-    `- If they have no AgentSign account at all: they text Jarvis (${bot}) and set up with their Ledger first, then call back.`,
+    `- If they have no AgentSign account at all: they ${joinHint()} first, then call back.`,
     "- Lines in square brackets that start with AgentSign are updates from the system, not the caller. When one says the number is linked, say so and ask what they would like to do.",
     "- When they say goodbye or are done, call end_call, then say one short goodbye.",
     ...standing(context),

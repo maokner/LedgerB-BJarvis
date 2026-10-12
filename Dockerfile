@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# AgentSign server image (Fly.io): Telegram channel, eth device mode, approval page on 7788, headless Chromium for Amazon.
+# AgentSign server image (Fly.io): iMessage on Photon (or Telegram), eth device mode, approval page on 7788, headless Chromium for Amazon.
 # The Ledger is never attached to this machine; it signs through the approval page (WebHID) in a browser.
 
 FROM node:22-bookworm-slim AS base
@@ -44,7 +44,7 @@ COPY src ./src
 COPY scripts ./scripts
 COPY voice ./voice
 # Everything persistent lives on the /data volume. data/ (relative to /app) also points there,
-# so Telegram image downloads (data/telegram) land on the volume and stay writable.
+# so the channels' image downloads (data/photon, data/telegram) land on the volume and stay writable.
 RUN mkdir -p /data && chown node:node /data && ln -s /data /app/data
 EXPOSE 7788
 ENTRYPOINT ["agentsign-entrypoint"]

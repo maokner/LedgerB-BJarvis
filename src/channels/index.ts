@@ -11,3 +11,4 @@ export {
   type OutboxPage,
 } from "./dev.js";
 export { createTelegramChannel, MAX_TELEGRAM_CHARS, type TelegramChannelOptions } from "./telegram.js";
+export { connectSpectrum, createPhotonChannel, type PhotonChannelOptions, type PhotonClient } from "./photon.js";

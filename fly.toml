@@ -1,5 +1,5 @@
 # AgentSign on Fly.io. Deploy with scripts/fly-deploy.sh (see "Run it" in README.md).
-# Exactly one machine: it long-polls Telegram (one poller per bot token) and owns the SQLite volume.
+# Exactly one machine: it holds the one Spectrum message stream from Photon (iMessage) and owns the SQLite volume.
 
 app = "agentsign-jarvis"
 primary_region = "sjc"
@@ -11,12 +11,14 @@ swap_size_mb = 512
 [build]
   dockerfile = "Dockerfile"
 
-# Secrets (fly secrets): XAI_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_BOT_USERNAME, MCP_TOKEN, ADMIN_TOKEN, PUBLIC_URL,
-# OPENAI_API_KEY, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN and TWILIO_PHONE_NUMBER (calling Jarvis, see voice/TWILIO.md),
-# and optionally VOICE_WEBHOOK_SECRET, GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET (Google Calendar).
+# Secrets (fly secrets): XAI_API_KEY, SPECTRUM_PROJECT_ID, SPECTRUM_PROJECT_SECRET, PHOTON_NUMBER, MCP_TOKEN, ADMIN_TOKEN,
+# PUBLIC_URL, OPENAI_API_KEY, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN and TWILIO_PHONE_NUMBER (calling Jarvis, see
+# voice/TWILIO.md), and optionally VOICE_WEBHOOK_SECRET, GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET (Google Calendar).
+# With CHANNEL = "telegram" instead: TELEGRAM_BOT_TOKEN and TELEGRAM_BOT_USERNAME.
 # Phone calls are websockets through the Fly proxy (wss://agentsign-jarvis.fly.dev/twilio/media); nothing else to open.
 [env]
-  CHANNEL = "telegram"
+  # iMessage on Photon's hosted service (src/channels/photon.ts). One machine holds the Spectrum stream.
+  CHANNEL = "photon"
   DEVICE_MODE = "eth"
   # No USB on Fly: every Ledger signs through the approval page (PUBLIC_URL/sign/<token>) in Chrome.
   DEVICES = ""
@@ -34,11 +36,11 @@ swap_size_mb = 512
 [http_service]
   internal_port = 7788
   force_https = true
-  # Telegram long polling is outbound, so the proxy never sees that traffic: the machine must never stop.
+  # The Spectrum stream (or Telegram long polling) is outbound, so the proxy never sees that traffic: the machine must never stop.
   auto_stop_machines = "off"
   auto_start_machines = true
   min_machines_running = 1
-  # Keep it at one machine (fly scale count 1); two would fight over getUpdates and the volume.
+  # Keep it at one machine (fly scale count 1); two would each answer every message, and fight over the volume.
 
 [checks]
   [checks.web]

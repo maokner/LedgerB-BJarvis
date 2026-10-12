@@ -1,12 +1,17 @@
-# AgentSign: a Telegram agent whose risky actions are clear-signed on a Ledger
+# AgentSign: an iMessage agent whose risky actions are clear-signed on a Ledger
 
 Hackathon build. Bare-bones on purpose: one Node process, one SQLite file, one small Ledger app, xAI (Grok) for the model.
 
 ## The demo
 
-1. Matt opens the bot (Jarvis) on Telegram and presses Start. Jarvis introduces itself (`INTRO` in `src/agent/persona.ts`: an always-on assistant on its own computer, what it can do today, and that risky things wait on the Ledger), then offers his Telegram username as his tag: "You're @mokner on Telegram, so that's your tag here."
-   Matt says `go` with his Ledger plugged into the Mac (or `link` for a sign-up page on any computer). The device shows `Create account / Tag @mokner / Telegram @mokner`.
-   Matt approves. His account now exists: his Telegram user id, bound to that device's key.
+1. Matt texts Jarvis on iMessage, at the number of a Photon line (`PHOTON_NUMBER`).
+   Jarvis introduces itself (`INTRO` in `src/agent/persona.ts`: an always-on assistant on its own computer, what it can do today, and that risky things wait on the Ledger), then asks for the tag he wants.
+   Matt says `@mokner`.
+   Jarvis sends a sign-up link that works in Chrome on any computer (or, with his Ledger plugged into the server's Mac, asks the device directly).
+   The device shows `Create account / Tag @mokner / Phone +14155550100`.
+   Matt approves.
+   His account now exists: his phone number, bound to that device's key.
+   On Telegram (`CHANNEL=telegram`) the start is the same, except that Matt opens the bot and presses Start, and Jarvis offers his Telegram username as the tag: "You're @mokner on Telegram, so that's your tag here."
 2. Matt texts `send $5 to @gabriel`. The agent proposes a payment and texts `Please confirm on your Ledger: Send money, To @gabriel, Amount $5.00`.
    The device shows exactly that. Matt approves. The signature is verified against his account key, the balance moves, Gabriel is texted.
 3. Matt texts a photo of a receipt: `pay gabe back for lunch`. Grok reads the total from the image; same approval flow.
@@ -19,18 +24,21 @@ Everything else is the owner's call. A per-owner **Ledger policy** (`src/policy.
 
 ## Identity
 
-An account is a Telegram user plus a Ledger.
-The channel names the sender by a handle, `tg:<telegram user id>`, which never changes; the account stores it, the Ledger's key or address, the tag, and the latest Telegram `username` and `display_name` (refreshed on every message).
-The tag defaults to `@<username>` (lowercased) when that is a valid, free tag; otherwise Jarvis asks for one.
-Anywhere a person is named (`To @tag`, `With @tag`), a Telegram @username of someone with an account works too.
-A bot cannot message someone first, so friends must open the bot and press Start before anything can reach them.
-The dev and iMessage channels still work with phone-number or email handles (dev is what the tests and the REPL use).
+An account is a handle (an iMessage phone number or email on Photon, or a Telegram user) plus a Ledger.
+The channel names the sender by that handle: on iMessage the address they text from, normalized to E.164 or a lowercase email; on Telegram `tg:<telegram user id>`, which never changes.
+The account stores the handle, the Ledger's key or address, the tag, and on Telegram the latest `username` and `display_name` (refreshed on every message).
+iMessage has no usernames, so Jarvis asks every new person for the tag they want.
+On Telegram the tag defaults to `@<username>` (lowercased) when that is a valid, free tag; otherwise Jarvis asks for one.
+Anywhere a person is named (`To @tag`, `With @tag`), the exact phone number or email of someone with an account works too, and so does a Telegram @username.
+Neither channel can start a conversation with a stranger: on a shared Photon line Jarvis can only text a number that texted the line first, and a Telegram bot only someone who pressed Start.
+So friends must text Jarvis (or open the bot) before anything can reach them.
+The dev channel uses phone-number handles too; it is what the tests and the REPL use.
 
 ## Architecture
 
 ```
-Telegram (Bot API) ──┐                            ┌── Ledger Nano S Plus (USB HID)
-                     ├─ Channel ─► App ─► DeviceManager ─┤
+iMessage (Photon) ───┐                            ┌── Ledger Nano S Plus (USB HID)
+Telegram (Bot API) ──┼─ Channel ─► App ─► DeviceManager ─┤
 dev HTTP/REPL ───────┘            │                      └── Speculos emulator (TCP), for development
                                   │
                         ┌─────────┴──────────┐
@@ -55,7 +63,8 @@ Source layout (TypeScript, ESM, Node 22+, `tsx` to run, `vitest` to test, `bette
 | `src/app.ts` | app agent | `createApp()`: routing, onboarding, friend requests, everything behind `App.handleInbound` |
 | `src/calendar/` | app agent | the owners' calendars: AgentSign's table plus Google Calendar (OAuth link, merged reads, mirroring approved events) |
 | `src/index.ts` | app agent | entry: env, DB, device manager, channel, app |
-| `src/channels/` | channel agent | Telegram bot channel; local HTTP + REPL channel; the older iMessage (Photon) channel |
+| `src/channels/` | channel agent | iMessage on Photon's hosted service (the default); Telegram bot channel; local HTTP + REPL channel; iMessage on the Mac's own Messages |
+| `src/agent/bot.ts` | app agent | how Jarvis names itself, the chat and the way to join, per channel (`CHANNEL`, `PHOTON_NUMBER`) |
 | `README.md` | channel agent | what it is, how the Ledger plays into it, how to run it |
 
 ## Actions and clear signing
@@ -74,7 +83,7 @@ Field conventions (the server builds them, the device just shows them):
 
 | Code | Fields |
 |---|---|
-| ACC | `Tag @mokner`, `Telegram @mokner` (`Telegram id 123456` without a username; dev and iMessage: `Phone <handle>`) |
+| ACC | `Tag @mokner`, `Phone +14155550100` (the iMessage handle, an email too; Telegram: `Telegram @mokner`, or `Telegram id 123456` without a username) |
 | PAY | `To @gabriel`, `Amount $5.00`, optional `Memo lunch` |
 | CAL | `Title Lunch with Gabe`, `When Sat Oct 11 12:00-13:00`, optional `With @gabriel` |
 | FRQ | `To @yadu` |
@@ -145,7 +154,7 @@ Only accepted friends can be reached; the engine composes the note in the owner'
 
 ## Executors (run only after a verified signature)
 
-- `ACC`: create account (tag, pubkey, the handle the sign-up came from), balance starts at $250.00 demo money; the app then stores the Telegram username and display name on it.
+- `ACC`: create account (tag, pubkey, the handle the sign-up came from), balance starts at $250.00 demo money; on Telegram the app then stores the username and display name on it.
 - `PAY`: debit sender, credit recipient (recipient must exist), log a transaction, text the recipient.
 - `CAL`: the owner's own event (no `With`; meetings with friends never come here): insert it, then mirror it to their Google Calendar when one is connected (a Google failure is a line in the text, not a failed action).
 - `FRQ`: friendship row `pending`, text the target's handles.
@@ -194,8 +203,23 @@ Everything ships to the Amazon account's default address (`PURCHASE_SHIPS_TO` sa
 ## Channels
 
 `Channel.start(onMessage)` delivers direct messages (on Telegram with the sender's `username` and `name`); `Channel.send(handle, text)` sends.
+`CHANNEL` picks one: `photon` when `SPECTRUM_PROJECT_ID` is set, else `telegram` when `TELEGRAM_BOT_TOKEN` is set, else `imessage`.
+`src/index.ts` writes the choice back to `CHANNEL`, and `src/agent/bot.ts` reads it to word the prompts: which app the chat is in, how a friend joins ("text Jarvis at +1... on iMessage" or "open @bot on Telegram and press Start"), and where a link lands.
+
+The Photon channel (`src/channels/photon.ts`, the deployed default) is iMessage on Photon's hosted service through Spectrum (`@spectrum-ts/core` and `@spectrum-ts/imessage`).
+Nothing runs on a Mac: the server holds one outbound stream of messages from Photon's cloud with the project's `SPECTRUM_PROJECT_ID` and `SPECTRUM_PROJECT_SECRET`, and sends through it.
+Jarvis lives on one of Photon's shared lines; `PHOTON_NUMBER` is that number as Jarvis tells people.
+A shared line may only text a number after that number has texted the line first, and it opens about 50 new conversations a day.
+A send that the line refuses comes back as a plain error ("they have to text Jarvis at <number> first").
+Only inbound 1:1 messages reach the app; group chats, tapbacks, Jarvis's own sends and empty rows are dropped.
+A photo and its words arrive as one Spectrum group and become one message; image attachments are written to `data/photon`.
+Per sender the messages keep their order, and no turn waits for another person's.
+Each person's chat id is kept in the `settings` table (`photon_space:<handle>`), so after a restart Jarvis can still text someone; a handle with no chat yet gets one from `space.create`.
+Typing indicators, tapbacks (the app's thumbs up) and read receipts work here; all three are best effort.
+If the stream ends or fails, the channel reconnects with backoff.
+
 The Telegram channel is a bot that long-polls the Bot API (`TELEGRAM_BOT_TOKEN`); `TELEGRAM_BOT_USERNAME` is how Jarvis tells people to find it.
-The older iMessage channel is Photon's `@photon-ai/imessage-kit` (reads `~/Library/Messages/chat.db`, sends through Messages.app).
+The local iMessage channel is Photon's `@photon-ai/imessage-kit` on a Mac (reads `~/Library/Messages/chat.db`, sends through Messages.app).
 It needs Full Disk Access and Automation for the terminal that runs it; only Matt can grant those, and nothing in tests may touch Messages.app or chat.db.
 The dev channel is an HTTP server (`POST /dev/message`, `GET /dev/outbox`) plus a REPL so the whole flow can be exercised with Speculos and no phone.
 
@@ -204,11 +228,14 @@ The dev channel is an HTTP server (`POST /dev/message`, `GET /dev/outbox`) plus 
 Owners can call Jarvis on a Twilio number (`voice/TWILIO.md` has the setup).
 Twilio POSTs the call to `/twilio/voice` (signed with the account's auth token, checked in `src/voice/twilio.ts`); the TwiML answer connects the call's audio to the websocket `/twilio/media` with a one-time token naming the caller, so a stream can only claim a number the signed webhook saw.
 The media stream (G.711 mu-law) is piped both ways into one OpenAI realtime session (`src/voice/session.ts`) configured for `audio/pcmu`, with server VAD and caller transcription; a barge-in clears Twilio's playback buffer and truncates the model's last item to what the caller heard.
-The session's tools are the engine's own (`engineTools`), plus `end_call`: a call runs exactly the harness a text runs, so read-only tools run at once and anything for the Ledger becomes an approval whose text and link land in the owner's Telegram chat; the session tells the caller the outcome if it lands during the call.
+The session's tools are the engine's own (`engineTools`), plus `end_call`: a call runs exactly the harness a text runs, so read-only tools run at once and anything for the Ledger becomes an approval whose text and link land in the owner's chat with Jarvis (iMessage or Telegram); the session tells the caller the outcome if it lands during the call.
 The transcript is stored as a system note in the chat history when the call ends.
 The same session drives the older xAI realtime path (`src/voice/webhook.ts`, `provider: "xai"`), and `pnpm voice:chat` types to it in text mode.
 
-Identity is the caller ID. An account's handle is its Telegram id, so an owner links their phone number once (`src/phone.ts`): by telling Jarvis the number on Telegram (`link_phone`), or by calling from it: an unlinked caller hears a four-digit code, texts it to the bot (a deterministic shortcut in `src/app.ts`, no model call), and the live call switches to the owner's tools.
+Identity is the caller ID, looked up as a handle.
+On iMessage the account's handle is already the owner's phone number, so a call from it is the owner with nothing to link.
+A Telegram account's handle is its Telegram id, so the owner links their phone number once (`src/phone.ts`): by telling Jarvis the number (`link_phone`), or by calling from it: an unlinked caller hears a four-digit code, texts it to Jarvis (a deterministic shortcut in `src/app.ts`, no model call), and the live call switches to the owner's tools.
+An iMessage owner can link another number (a work phone) the same way.
 Linked numbers are secondary rows in `handles` (unique, so a number belongs to one account); the Phone line in the owner facts lists them and the number to call.
 Hidden caller IDs are declined with a spoken line.
 

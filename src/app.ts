@@ -14,7 +14,7 @@ import { answerMeeting } from "./meetings.js";
 import { executeDirectly, requiresLedger } from "./policy.js";
 import { ACTION_TITLES, type Action, type ActionField, ANY_DEVICE, type App, type Channel, type DeviceManager, type InboundMessage } from "./types.js";
 
-/** Said to someone new without a usable Telegram username when the model cannot be reached. */
+/** Said to someone new without a username to offer as the tag (everyone on iMessage) when the model cannot be reached. */
 export const greeting = setupLine;
 export const OOPS = "Sorry, something broke on my side. Give it a minute and try again.";
 const STRANGER_MEMORY = 12;
@@ -29,7 +29,7 @@ const NO = /^(?:(?:no|nope|nah|sorry)[,!. ]+)?(?:no|nope|nah|can'?t|cannot|i can
 /** An owner asking to connect Google Calendar in so many words. */
 const GOOGLE = /^(?:please |can you |could you )?(?:connect|link|sync|hook up|add)(?: up)?(?: to)? (?:my |the )?google calendar(?: please)?[.!? ]*$/i;
 
-/** ACC fields: the tag, and whom it is for as the Ledger can show it ("Telegram @mokner", or "Phone <handle>" off Telegram). */
+/** ACC fields: the tag, and whom it is for as the Ledger can show it ("Telegram @mokner", or "Phone <handle>" for an iMessage phone or email). */
 export function accountFields(handle: string, tag: string, username?: string): ActionField[] {
   if (!handle.startsWith("tg:")) return [{ label: "Tag", value: tag }, { label: "Phone", value: handle }];
   const who = username && /^[a-z0-9_]{1,60}$/i.test(username) ? `@${username.toLowerCase()}` : `id ${handle.slice(3)}`;
@@ -165,7 +165,7 @@ export function createApp(options: AppOptions): App & AppVoiceHooks & { approval
     if (db.accountByTag(tag) || [...onboarding.values()].some((o) => o.tag === tag)) {
       return reply(`${tag} is taken, I'm afraid. Which other tag would you like?`);
     }
-    // Off Telegram the Ledger shows and signs the handle itself, so it must be ASCII and at most 64 bytes.
+    // An iMessage phone or email (or a dev handle) is shown and signed by the Ledger itself, so it must be ASCII and at most 64 bytes.
     if (!handle.startsWith("tg:") && toFieldText(handle) !== handle) {
       return reply("Your Ledger can't display this address exactly, so I can't use it. Please message me from another account.");
     }
@@ -246,7 +246,7 @@ export function createApp(options: AppOptions): App & AppVoiceHooks & { approval
     if (exact) return onboard(handle, exact);
     const text = message.text.trim();
     const setup: StrangerSetup = { appName: app, defaultTag: defaultTag(handle), link: canLink };
-    const opener = setup.defaultTag ? welcomeLine(setup.defaultTag, app, canLink) : greeting(app);
+    const opener = setup.defaultTag ? welcomeLine(setup.defaultTag, app, canLink) : greeting(app, canLink);
     const past = strangers.get(handle) ?? [];
     if (setup.defaultTag && LINK.test(text)) return onboard(handle, setup.defaultTag, true);
     if (setup.defaultTag && GO.test(text)) return onboard(handle, setup.defaultTag);
@@ -260,7 +260,9 @@ export function createApp(options: AppOptions): App & AppVoiceHooks & { approval
       log(`stranger turn for ${handle} failed: ${(err as Error).message}`);
       const nudge = setup.defaultTag
         ? `Say 'go' with your Ledger plugged into the Mac and ${app} open${canLink ? ", or 'link' for a page that works from any computer" : ""}.`
-        : `Tell me the tag you want, like @matt, with your Ledger plugged into the Mac and ${app} open.`;
+        : canLink
+          ? `Tell me the tag you want, like @matt, and I'll send a link to approve it on your Ledger from any computer.`
+          : `Tell me the tag you want, like @matt, with your Ledger plugged into the Mac and ${app} open.`;
       result = { reply: !past.length ? opener : nudge };
     } finally {
       await channel.typing(handle, false);

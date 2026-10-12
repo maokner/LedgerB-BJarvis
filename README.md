@@ -1,9 +1,13 @@
 # Jarvis
 
-Jarvis is a personal agent on Telegram.
+Jarvis is a personal agent on iMessage.
 You can also call it on the phone.
 It can send your money, manage your calendar and buy things for you.
 Your Ledger must sign each risky action before the action occurs.
+
+Jarvis uses a shared iMessage number from Photon.
+Jarvis can send a message to a person only after that person sends a message to Jarvis.
+Jarvis can also run as a Telegram bot.
 
 ## What it does
 
@@ -19,8 +23,10 @@ The agents of two friends can speak with each other to find a meeting time and t
 
 You can also call Jarvis on a Twilio number and speak.
 OpenAI's realtime model speaks as Jarvis with the same tools a text has.
-The call is recognised by your caller ID after you link your number once.
-Each action for the Ledger goes to your Telegram chat as usual, and Jarvis tells you on the call when you approve it.
+The call is recognised by your caller ID.
+On iMessage, your phone number is your account, so a call from it is recognised at once.
+On Telegram, you link your number one time.
+Each action for the Ledger goes to your chat with Jarvis as usual, and Jarvis tells you on the call when you approve it.
 See `voice/TWILIO.md`.
 
 ## The Ledger
@@ -35,7 +41,7 @@ The server changes the proposal into a request that the Ethereum app on the Ledg
 
 The server compares the signature with the address of your account before it does the action.
 Each action has a random id, so a signature is valid for one action only.
-An account is a Telegram user and a Ledger address.
+An account is an iMessage phone number or email (or a Telegram user) and a Ledger address.
 At sign-up, you verify the address on the device.
 
 The Ledger does not have to be connected to the server.
@@ -56,7 +62,7 @@ src/executors.ts             what each action does after the signature
 src/device/                  the Ledger: Ethereum app over USB, signature verification
 src/web/                     the approval page (WebHID in the browser)
 src/agent/                   persona, engine, tools, the xAI client
-src/channels/                Telegram (and a local dev channel for tests)
+src/channels/                iMessage on Photon, Telegram, and a local dev channel for tests
 src/voice/, src/phone.ts     phone calls: Twilio audio into OpenAI's realtime model, linked phone numbers
 src/money.ts, chain.ts       ETH and USDC on Base
 src/purchases.ts, merchant.ts, amazon/, treasury.ts   purchases on Amazon
@@ -72,13 +78,16 @@ device-app/                  a custom Nano S Plus app for the offline demo mode
 
 ```sh
 pnpm install
-cp .env.example .env     # XAI_API_KEY, TELEGRAM_BOT_TOKEN, PUBLIC_URL (https, for the approval page)
+cp .env.example .env     # XAI_API_KEY, SPECTRUM_PROJECT_ID, SPECTRUM_PROJECT_SECRET, PHOTON_NUMBER, PUBLIC_URL (https)
                          # calls: OPENAI_API_KEY, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER (voice/TWILIO.md)
-pnpm start               # Telegram
+pnpm start               # iMessage on Photon (CHANNEL=telegram for Telegram)
 pnpm dev                 # local dev channel, no phone
 pnpm test
 ```
 
+The Photon project id and secret are in the Photon dashboard, in the project settings.
+`PHOTON_NUMBER` is the number that people send messages to.
+
 To deploy to Fly.io, run `scripts/fly-deploy.sh`.
-The live bot is `agentsign-jarvis`.
+The live app is `agentsign-jarvis`.
 To point the Twilio number at it, run `scripts/twilio-setup.sh`.
