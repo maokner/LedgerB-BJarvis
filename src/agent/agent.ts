@@ -168,7 +168,7 @@ export async function toolLoop(deps: Pick<AgentDeps, "model" | "log">, o: LoopOp
 
 /**
  * Last messages for the model, starting at a user message or a system note (a friend's note, an outcome) so no tool
- * result is orphaned. Approval notes that landed while tool calls were still open are moved after the tool results.
+ * result is orphaned. Notes and call texts that landed while tool calls were still open are moved after the tool results.
  * Old images become a marker. Tool calls other than `keepTools` (from an older agent layout) are dropped with their results.
  */
 export function history(db: Db, accountId: number, keepTools: string[]): ChatMessage[] {
@@ -187,7 +187,8 @@ export function history(db: Db, accountId: number, keepTools: string[]): ChatMes
       m = keep.length ? { ...m, toolCalls: keep } : { role: "assistant", content: m.content };
     }
     if (m.role === "tool" && dropped.has(m.toolCallId)) continue;
-    if (m.role === "system" && open > 0) {
+    // Also a plain assistant text written from outside the turn (text_owner during a call) while tool calls were open.
+    if ((m.role === "system" || (m.role === "assistant" && !m.toolCalls?.length)) && open > 0) {
       held.push(m);
       continue;
     }

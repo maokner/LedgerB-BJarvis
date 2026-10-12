@@ -1,20 +1,27 @@
-/** Phone calls: webhook signatures, Jarvis's instructions, the realtime function-call bridge, the routes, and one live text-mode session. */
+/**
+ * Phone calls: webhook signatures, Jarvis's instructions, the realtime function-call bridge (with the owner's chat:
+ * text_owner, look_at_chat), the routes, and one live text-mode session.
+ */
 import { config } from "dotenv";
 import { createHmac, randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
+import { history } from "../src/agent/agent.js";
+import { createModel } from "../src/agent/xai.js";
 import { createRemoteDeviceManager } from "../src/device/index.js";
 import { instructionsFor } from "../src/voice/instructions.js";
 import { voiceRoutes } from "../src/voice/routes.js";
 import { runVoiceSession } from "../src/voice/session.js";
 import { callerFrom, createVoice, verifyWebhook } from "../src/voice/webhook.js";
 import { startWebServer, type WebServer } from "../src/web/server.js";
-import { harness, PHONES } from "./helpers.js";
+import { call, harness, isEngine, PHONES, say } from "./helpers.js";
+import { receiptPng } from "./receipt.js";
 
 config({ path: join(homedir(), ".grok", ".env"), quiet: true });
 
@@ -77,6 +84,8 @@ describe("instructions", () => {
     h.befriend(matt.id, h.db.accountByTag("@yadu")!.id);
     const text = await instructionsFor(h.app.deps, matt, "Matt is demoing at a hackathon.");
     for (const s of ["Jarvis", "@matt (Matt)", "$250.00", "@yadu", "Waiting on @matt's Ledger: nothing", "propose_action", "Never read addresses", "Matt is demoing at a hackathon."]) expect(text).toContain(s);
+    for (const s of ["text_owner", "look_at_chat", "never say you cannot see", "the link is in your chat"]) expect(text).toContain(s);
+    expect(text).not.toContain("Telegram");
   });
   it("walks a stranger to a tag", async () => {
     const text = await instructionsFor(harness(1).app.deps, undefined, "");
@@ -151,6 +160,85 @@ describe("realtime bridge", () => {
     expect(h.db.accountByHandle("+14155550009")?.tag).toBe("@gabe");
     expect(h.to("+14155550009")[0]).toContain("@gabe");
     expect(ws.of("session.update").at(-1).session.tools.map((t: { name: string }) => t.name)).toContain("get_balance");
+  });
+});
+
+describe("the owner's chat from a call", () => {
+  /** One model response that calls `name` with `args`; resolves with the tool's output once the session answered it. */
+  async function toolCall(ws: FakeSocket, name: string, args: Record<string, unknown>): Promise<string> {
+    const before = ws.of("response.create").length;
+    const id = `${name}_${randomBytes(3).toString("hex")}`;
+    ws.event({ type: "response.created" });
+    ws.event({ type: "response.function_call_arguments.done", name, call_id: id, arguments: JSON.stringify(args) });
+    ws.event({ type: "response.done" });
+    await until(() => ws.of("response.create").length > before);
+    return JSON.parse(ws.of("conversation.item.create").find((m) => m.item.call_id === id).item.output) as string;
+  }
+  async function dial(h: ReturnType<typeof harness>) {
+    const ws = new FakeSocket();
+    runVoiceSession({ ws, caller: PHONES.matt, deps: h.app, mode: "text", greet: false });
+    await until(() => ws.of("session.update").length === 1);
+    return ws;
+  }
+
+  it("text_owner sends plain text to the owner's chat and keeps it in their history", async () => {
+    const h = harness(1);
+    const matt = await h.onboard("matt", 0);
+    const ws = await dial(h);
+    expect(ws.of("session.update")[0].session.tools.map((t: { name: string }) => t.name)).toEqual(expect.arrayContaining(["text_owner", "look_at_chat"]));
+    const output = await toolCall(ws, "text_owner", { text: "**Order** 113-5550 — arriving Tuesday" });
+    expect(output).toBe('Sent in their texts: "Order 113-5550 - arriving Tuesday". Tell them it is there, in a few words.');
+    expect(h.to(PHONES.matt).at(-1)).toBe("Order 113-5550 - arriving Tuesday");
+    expect(h.db.recentMessages(matt.id).at(-1)!.content).toEqual({ role: "assistant", content: "Order 113-5550 - arriving Tuesday" });
+    expect(await toolCall(ws, "text_owner", { text: "x".repeat(1001) })).toMatch(/^Error: too long/);
+  });
+
+  it("a text sent from a call while a text turn has tool calls open stays after their results in the history", async () => {
+    const h = harness(1);
+    const matt = await h.onboard("matt", 0);
+    h.db.addMessage(matt.id, "user", { role: "user", content: "pay gabe back" });
+    h.db.addMessage(matt.id, "assistant", { role: "assistant", content: "", toolCalls: [{ id: "d1", name: "delegate", arguments: "{}" }] });
+    h.db.addMessage(matt.id, "assistant", { role: "assistant", content: "Order 113-5550" });
+    h.db.addMessage(matt.id, "tool", { role: "tool", toolCallId: "d1", content: "Proposed." });
+    expect(history(h.db, matt.id, ["delegate"]).map((m) => m.role)).toEqual(["user", "assistant", "tool", "assistant"]);
+  });
+
+  it("look_at_chat reads the latest texts back as lines, without the engine", async () => {
+    const h = harness(1);
+    await h.onboard("matt", 0);
+    h.script(say("Noted: 4417."));
+    await h.send(PHONES.matt, "the gate code is 4417");
+    const ws = await dial(h);
+    const asked = h.requests.length;
+    const output = await toolCall(ws, "look_at_chat", { question: "what was the last thing I sent you" });
+    expect(output).toContain("- They: the gate code is 4417\n- You: Noted: 4417.");
+    expect(h.requests).toHaveLength(asked);
+  });
+
+  it("look_at_chat runs the engine on a photo: the receipt becomes a PAY, the approval lands in the chat, the call hears it", async () => {
+    const h = harness(2);
+    const matt = await h.onboard("matt", 0);
+    await h.onboard("gabriel", 1);
+    const receipt = join(mkdtempSync(join(tmpdir(), "agentsign-voice-")), "receipt.jpg");
+    writeFileSync(receipt, "not really a jpeg");
+    h.script(say("That's a lot of tacos."));
+    await h.send(PHONES.matt, "", [receipt]);
+    const ws = await dial(h);
+    h.script((request) => {
+      expect(isEngine(request)).toBe(true);
+      expect(request.messages[0]).toMatchObject({ role: "user", images: [receipt] });
+      expect(request.messages[0]!.content).toContain("Task: look at the receipt and pay gabe back half");
+      return call("propose_action", { code: "PAY", fields: [{ label: "To", value: "@gabriel" }, { label: "Amount", value: "$12.40" }] });
+    });
+    const output = await toolCall(ws, "look_at_chat", { question: "look at the receipt and pay gabe back half" });
+    expect(output).toContain("- They: [sent a photo]");
+    expect(output).toMatch(/Their photo, read just now: Proposed on @matt's Ledger: Send money: To @gabriel, Amount \$12\.40\..*went to their texts/);
+    await h.app.whenIdle();
+    expect(h.to(PHONES.matt)).toContain("Please confirm on your Ledger: Send money: To @gabriel, Amount $12.40");
+    ws.event({ type: "response.created" });
+    ws.event({ type: "response.done" });
+    await until(() => ws.notes().some((n) => n.includes("Approved on their Ledger and done: Send money: To @gabriel, Amount $12.40")));
+    expect(h.remaining()).toBe(0);
   });
 });
 
@@ -238,4 +326,29 @@ describe.skipIf(!apiKey)("live realtime session (text mode)", () => {
       ws.close();
     }
   }, 90_000);
+
+  it("looks at the receipt the owner texted and puts paying gabe back on the Ledger", async () => {
+    const h = harness(2, createModel({ apiKey: apiKey! }));
+    await h.onboard("matt", 0);
+    await h.onboard("gabriel", 1);
+    const receipt = join(mkdtempSync(join(tmpdir(), "agentsign-voice-")), "receipt.png");
+    writeFileSync(receipt, receiptPng(["CAFE ROMA", "", "BURRITO   $12.50", "TACOS      $8.00", "TAX        $2.90", "", "TOTAL     $23.40"]));
+    await h.send(PHONES.matt, "keep this for later", [receipt]);
+    const ws = new WebSocket("wss://api.x.ai/v1/realtime?model=grok-voice-latest", { headers: { authorization: `Bearer ${apiKey}` } });
+    await new Promise((resolve, reject) => ws.once("open", resolve).once("error", reject));
+    const lines: string[] = [];
+    const session = runVoiceSession({ ws, caller: PHONES.matt, deps: h.app, mode: "text", greet: false, onTurn: (t) => lines.push(`${t.who}: ${t.text}`) });
+    try {
+      await session.say("Hey, take a look at what I just sent you and pay Gabe back for it.");
+      await h.app.whenIdle();
+      console.log(`live look_at_chat transcript:\n${lines.join("\n")}`);
+      expect(session.turns.some((t) => t.who === "tool" && t.text.startsWith("look_at_chat("))).toBe(true);
+      const shown = h.devices[0]!.shown.filter((a) => a.code === "PAY").at(-1)!;
+      expect(shown.fields.slice(0, 2)).toEqual([{ label: "To", value: "@gabriel" }, { label: "Amount", value: "$23.40" }]);
+      expect(h.to(PHONES.matt).some((t) => t.startsWith("Please confirm on your Ledger: Send money: To @gabriel, Amount $23.40"))).toBe(true);
+      await session.idle();
+    } finally {
+      ws.close();
+    }
+  }, 120_000);
 });

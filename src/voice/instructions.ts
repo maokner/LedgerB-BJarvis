@@ -54,7 +54,7 @@ export function ownerInstructions(owner: Account, facts: string[], context = "",
     "How you work:",
     "- Use your tools for anything that needs fresh data: balance, friends, calendar, notes, past payments, a friend's free time, Amazon prices. Never invent balances, names, times or outcomes.",
     `- Money and deleting the account always go to ${name}'s Ledger through propose_action; calendar events, friend requests and accepts go there only when their Ledger policy (in the facts) says so, otherwise propose_action does them at once and says so. Only one action can wait on the Ledger at a time.`,
-    `- When something goes to the Ledger: a message with the exact details and a link lands in ${chat}; the link opens a page that signs it on their Ledger from any computer. Say something like "I'll put that on your Ledger; the link is in your Telegram." Never say it is sent, booked, bought or done until you are told it was approved; you will be told during the call if it lands.`,
+    `- When something goes to the Ledger: a message with the exact details and a link lands in ${chat}; the link opens a page that signs it on their Ledger from any computer. Say something like "I'll put that on your Ledger; the link is in your chat." Never say it is sent, booked, bought or done until you are told it was approved; you will be told during the call if it lands.`,
     "- Match names to tags (gabe -> @gabriel). If a tool says a name is unknown or ambiguous, ask.",
     `- To meet a friend, call propose_meeting right away with their tag, a short title, the window ${name} is open to and the length (30 minutes unless they said). Their agent and you find a time free for both; the friend confirms by text; nothing goes on any Ledger. When a friend proposed a meeting (the facts list it), ${name}'s yes, no or other time is answer_meeting.`,
     `- To tell a friend something (a thank you, a hello, a reply): send_note, in ${name}'s words. It reaches them at once; nothing to approve. message_agent only asks when a friend is free.`,
@@ -63,7 +63,9 @@ export function ownerInstructions(owner: Account, facts: string[], context = "",
     `- Google Calendar: if ${name} asks to connect it, call connect_google_calendar; the link lands in ${chat}. Never ask for Google passwords.`,
     `- Phone numbers: link_phone when ${name} gives you another number of theirs; unlink_phone only when asked.`,
     `- Use remember for lasting facts ${name} tells you.`,
-    `- Receipts need a photo: ask them to send it in ${chat}.`,
+    `- To put something in ${chat} (an address, an order number, a link, a summary), call text_owner with the plain text. Links, addresses and long numbers are never read aloud: offer to text them instead ("want me to text you that?").`,
+    `- When ${name} says "look at this", "I sent you something" or "what did I just send", or asks about a photo or an earlier text, call look_at_chat with their request as the question; never say you cannot see their texts. Say "one moment, having a look" first: photos take a few seconds. It reads photos for you, and a request about one (a receipt to pay back) goes to their Ledger like any other proposal.`,
+    `- Receipts need a photo: ask them to send it in ${chat}, then call look_at_chat.`,
     `- Only if ${name} clearly asks to delete or close their account, propose DEL. Their Ledger is the confirmation.`,
     "- Lines in square brackets that start with AgentSign are updates from the system, not the caller. Pass them on briefly.",
     "- When they say goodbye or are done, call end_call, then say one short goodbye.",
@@ -76,13 +78,13 @@ export function ownerInstructions(owner: Account, facts: string[], context = "",
 export function unlinkedInstructions(code: string, context = ""): string {
   const bot = botMention();
   return [
-    "You are Jarvis, the voice of AgentSign, a personal agent people text on Telegram and can call on the phone. This call comes from a phone number no account has linked yet, so you do not know who is calling.",
+    "You are Jarvis, the voice of AgentSign, a personal agent people text and can call on the phone. This call comes from a phone number no account has linked yet, so you do not know who is calling.",
     ...VOICE,
     "",
     `Their code is ${code}. Read it as single digits: "${spokenCode(code)}".`,
-    `- Open with one short line: Jarvis here, this number isn't linked yet; to link it, text the code ${spokenCode(code)} to Jarvis on Telegram (${bot}), and you'll stay on the line.`,
+    `- Open with one short line: Jarvis here, this number isn't linked yet; to link it, text the code ${spokenCode(code)} to Jarvis (${bot}), and you'll stay on the line.`,
     "- Repeat the code when asked. Keep it to the code; you cannot look anything up or do anything for them until the number is linked.",
-    "- If they have no AgentSign account at all: they open the bot on Telegram, press Start and set up with their Ledger first, then call back.",
+    `- If they have no AgentSign account at all: they text Jarvis (${bot}) and set up with their Ledger first, then call back.`,
     "- Lines in square brackets that start with AgentSign are updates from the system, not the caller. When one says the number is linked, say so and ask what they would like to do.",
     "- When they say goodbye or are done, call end_call, then say one short goodbye.",
     ...standing(context),
@@ -106,15 +108,19 @@ export function strangerInstructions(appName: string, context = ""): string {
   ].join("\n");
 }
 
-/** The last few plain texts and notes in the owner's chat history, one line each. */
+/** The last few plain texts and notes in the owner's chat history, one line each; photos are marked. */
 export function recentLines(db: Db, accountId: number, limit = 10): string[] {
   const who = { user: "They", assistant: "You", system: "Note" } as Record<string, string>;
+  const photos = (n: number) => (n ? `[sent ${n === 1 ? "a photo" : `${n} photos`}]` : "");
   return db
     .recentMessages(accountId, 40)
-    .map((m) => m.content as { role: string; content?: unknown; toolCalls?: unknown[] })
+    .map((m) => m.content as { role: string; content?: unknown; toolCalls?: unknown[]; images?: unknown[] })
     .filter((m) => who[m.role] && typeof m.content === "string" && m.content.trim() && !m.toolCalls?.length)
     .slice(-limit)
-    .map((m) => `- ${who[m.role]}: ${String(m.content).replace(/\s+/g, " ").slice(0, 240)}`);
+    .map((m) => {
+      const text = String(m.content) === "(no text)" ? "" : String(m.content).replace(/\s+/g, " ").slice(0, 240);
+      return `- ${who[m.role]}: ${[text, photos(m.images?.length ?? 0)].filter(Boolean).join(" ")}`;
+    });
 }
 
 /**
