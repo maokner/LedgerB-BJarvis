@@ -2,10 +2,11 @@
  * Drives one realtime session as Jarvis over a websocket: OpenAI's realtime API (GA event shapes, phone calls through
  * Twilio in src/voice/twilio.ts) or xAI's (src/voice/webhook.ts), in call mode (server VAD, Jarvis speaks first) or
  * typed text mode (tests, scripts/voice-chat.ts). Tools are the engine's own (engineTools), so a call runs the same
- * harness as a text: read-only tools run, anything risky is only proposed to the caller's Ledger.
+ * harness as a text: read-only tools run, anything risky is only proposed to the caller's Ledger. Plus the owner's chat
+ * (src/voice/chat.ts): text_owner sends into it, look_at_chat reads it, photos included.
  *
- * Who is calling: the caller's number is looked up as a handle. An account whose channel is Telegram links its
- * number once (src/phone.ts): an unknown caller hears a four-digit code, texts it to Jarvis, and the live call switches
+ * Who is calling: the caller's number is looked up as a handle. An account whose chat handle is not that number links
+ * it once (src/phone.ts): an unknown caller hears a four-digit code, texts it to Jarvis, and the live call switches
  * to the owner's tools. Without phone links (the older phone-identity setup) an unknown caller signs up by choosing a tag.
  */
 import { describeAction } from "../actions.js";
@@ -18,6 +19,7 @@ import { parseTag } from "../handles.js";
 import { demoMoney } from "../money.js";
 import type { PhoneLinks } from "../phone.js";
 import { ACTION_TITLES, type Action } from "../types.js";
+import { chatVoiceTools, LOOK_AT_CHAT, lookAtChat, TEXT_OWNER, textOwner } from "./chat.js";
 import { chatName, CHOOSE_TAG, END_CALL, instructionsFor, strangerVoiceTools, unlinkedVoiceTools } from "./instructions.js";
 
 export const DEFAULT_VOICE = "atlas";
@@ -132,7 +134,7 @@ export function runVoiceSession(o: VoiceSessionOptions): VoiceSession {
     tools = owner ? engineTools(deps, owner, { onProposed: watch }).tools : undefined;
   }
   function toolSpecs(): ToolSpec[] {
-    if (owner) return [...tools!.specs, END_CALL];
+    if (owner) return [...tools!.specs, ...chatVoiceTools(), END_CALL];
     return o.phone ? unlinkedVoiceTools() : strangerVoiceTools();
   }
   async function configure(): Promise<void> {
@@ -239,6 +241,8 @@ export function runVoiceSession(o: VoiceSessionOptions): VoiceSession {
         ending = true;
         output = "Say one short goodbye now. The call ends right after it.";
       } else if (!owner) output = name === CHOOSE_TAG.name && !o.phone ? await chooseTag(args) : `Error: unknown tool ${name}.`;
+      else if (name === TEXT_OWNER.name) output = await textOwner(deps, owner, args.text, chat());
+      else if (name === LOOK_AT_CHAT.name) output = await lookAtChat(deps, owner, args.question, { onProposed: watch }, chat());
       else {
         output = await tools!.run(name, args);
         if (name === "propose_action" && output.startsWith("Proposed:")) {

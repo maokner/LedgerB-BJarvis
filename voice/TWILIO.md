@@ -24,7 +24,23 @@ An account is a Telegram user plus a Ledger, so you link your phone number once:
 A number belongs to at most one account.
 Hidden caller IDs are declined with a spoken line.
 
-Code: `src/voice/twilio.ts` (webhook, TwiML, the media bridge), `src/voice/session.ts` (the realtime session, OpenAI and xAI shapes), `src/voice/instructions.ts` (what Jarvis knows on a call), `src/phone.ts` (linked numbers and codes).
+Code: `src/voice/twilio.ts` (webhook, TwiML, the media bridge), `src/voice/session.ts` (the realtime session, OpenAI and xAI shapes), `src/voice/instructions.ts` (what Jarvis knows on a call), `src/voice/chat.ts` (the call's tools for your chat), `src/phone.ts` (linked numbers and codes).
+
+## Talking to the chat from a call
+
+A call and your chat with Jarvis are the same conversation, on whatever channel your chat is.
+Jarvis never reads links, addresses or long numbers aloud; anything for the Ledger already lands in the chat, and he says "the link is in your chat".
+Two more tools, for known callers only:
+
+- `text_owner(text)`: "text me the order number", "put the summary in the chat".
+  It sends one plain-text message (markdown stripped, at most 1000 characters) to your chat and keeps it in the chat history, so the next text turn knows it went out.
+- `look_at_chat(question?)`: "take a look at what I just sent you", "what did we last talk about", "read me the receipt I texted".
+  It returns your last texts as lines, newest last.
+  If one of your last three messages has a photo (or the question is about a photo, and one is in the recent chat), the engine reads it with the question as its task, through the same hooks as the call.
+  So "look at this receipt and pay Gabe back" proposes the payment, the approval lands in your chat, and Jarvis tells you on the call when it is approved.
+
+Photos are read from the paths stored with your messages (the channel's downloads).
+If a file is gone, Jarvis asks you to send it again.
 
 ## Set it up
 
