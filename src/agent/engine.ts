@@ -111,12 +111,24 @@ export function engineTools(deps: AgentDeps, owner: Account, hooks: EngineHooks 
 /** Runs one task and returns the report for the persona. Nothing here is persisted except what the tools do. */
 export async function runEngine(deps: AgentDeps, owner: Account, task: EngineTask, hooks: EngineHooks = {}): Promise<string> {
   const { db } = deps;
-  const { tools, proposed, settled } = engineTools(deps, owner, hooks);
-  // Models sometimes say "I proposed it" without calling propose_action. Catch that once per task.
-  const review = (report: string) =>
-    !proposed.length && claimsProposal(report)
-      ? "Your report says something was proposed, but propose_action was not called, so nothing was proposed. Call propose_action now, or report honestly what is missing."
-      : undefined;
+  const { tools: engine, proposed, settled } = engineTools(deps, owner, hooks);
+  // A food quote this task produced (quote_doordash answered with a quote_id): the order is meant to go to the Ledger next.
+  let quoted = false;
+  const tools: Tools = {
+    specs: engine.specs,
+    async run(name, args) {
+      const out = await engine.run(name, args);
+      if (name === "quote_doordash" && out.startsWith("{")) quoted = true;
+      return out;
+    },
+  };
+  // Models sometimes say "I proposed it" without calling propose_action, or quote a food order and stop. Catch each once per task.
+  const review = (report: string) => {
+    if (proposed.length) return undefined;
+    if (claimsProposal(report)) return "Your report says something was proposed, but propose_action was not called, so nothing was proposed. Call propose_action now, or report honestly what is missing.";
+    if (quoted && !/\?/.test(report)) return "You quoted a food order but did not call propose_action EAT with its quote_id, so nothing waits on the Ledger. If the owner asked for this order, propose it now; if they still have to choose, ask them in your report.";
+    return undefined;
+  };
   const money = deps.money ?? demoMoney();
   const balance = await money.balanceText(owner).catch(() => "unknown right now (use get_balance)");
   const user: ChatMessage = {

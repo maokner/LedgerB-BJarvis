@@ -2,7 +2,7 @@
  * What Jarvis knows and how he speaks on a phone call: the owner version, the unlinked-number version (phone links,
  * src/phone.ts) and the stranger (sign-up by phone) version for setups where the phone number is the account's handle.
  */
-import { ownerFacts, type AgentDeps } from "../agent/agent.js";
+import { foodOf, ownerFacts, type AgentDeps } from "../agent/agent.js";
 import { botMention, channelKind, channelLabel, chatName, firstName, joinHint } from "../agent/bot.js";
 import type { ToolSpec } from "../agent/xai.js";
 import type { Account, Db } from "../db.js";
@@ -55,13 +55,14 @@ export function ownerInstructions(owner: Account, facts: string[], context = "",
     ...(recent.length ? ["Recent texts and notes with them, oldest first:", ...recent] : []),
     "",
     "How you work:",
-    "- Use your tools for anything that needs fresh data: balance, friends, calendar, notes, past payments, a friend's free time, Amazon prices. Never invent balances, names, times or outcomes.",
+    "- Use your tools for anything that needs fresh data: balance, friends, calendar, notes, past payments, a friend's free time, Amazon prices, DoorDash restaurants and menus. Never invent balances, names, times or outcomes.",
     `- Money and deleting the account always go to ${name}'s Ledger through propose_action; calendar events, friend requests and accepts go there only when their Ledger policy (in the facts) says so, otherwise propose_action does them at once and says so. Only one action can wait on the Ledger at a time.`,
     `- When something goes to the Ledger: a message with the exact details and a link lands in ${chat}; the link opens a page that signs it on their Ledger from any computer. Say something like "I'll put that on your Ledger; the link is in ${spokenChat(chat)}." Never say it is sent, booked, bought or done until you are told it was approved; you will be told during the call if it lands.`,
     "- Match names to tags (gabe -> @gabriel). If a tool says a name is unknown or ambiguous, ask.",
     `- To meet a friend, call propose_meeting right away with their tag, a short title, the window ${name} is open to and the length (30 minutes unless they said). Their agent and you find a time free for both; the friend confirms by text; nothing goes on any Ledger. When a friend proposed a meeting (the facts list it), ${name}'s yes, no or other time is answer_meeting.`,
     `- To tell a friend something (a thank you, a hello, a reply): send_note, in ${name}'s words. It reaches them at once; nothing to approve. message_agent only asks when a friend is free.`,
     "- To buy something (only where the facts say Amazon is available): search_amazon, pick the best match within what they said, then propose_action BUY with the item id. Say the exact total before it goes to the Ledger.",
+    `- To order food (only where the facts say DoorDash is available): it delivers to the address in the facts; with none, ask ${name} for it and save it with set_delivery_address. Then search_doordash, doordash_menu, quote_doordash with the items, and propose_action EAT with Order <quote_id>. Say the restaurant, the items and the exact total before it goes to the Ledger, and the ETA once the order is placed.`,
     `- The Ledger policy: answer what needs their Ledger from the facts; change it with set_ledger_policy when ${name} asks.`,
     `- Google Calendar: if ${name} asks to connect it, call connect_google_calendar; the link lands in ${chat}. Never ask for Google passwords.`,
     `- Phone numbers: link_phone when ${name} gives you another number of theirs; unlink_phone only when asked.`,
@@ -137,7 +138,7 @@ export async function instructionsFor(deps: AgentDeps, owner: Account | undefine
   if (!owner) return code ? unlinkedInstructions(code, context) : strangerInstructions(money.appName, context);
   const balance = await money.balanceText(owner).catch(() => "unknown right now (use get_balance)");
   const address = shortAddress(owner.pubkey);
-  const facts = [...ownerFacts(deps.db, owner, balance, deps.calendar, deps.purchases, deps.phone), ...(address ? [`Their address (never read it aloud): ${address}.`] : [])];
+  const facts = [...ownerFacts(deps.db, owner, balance, deps.calendar, deps.purchases, deps.phone, foodOf(deps)), ...(address ? [`Their address (never read it aloud): ${address}.`] : [])];
   return ownerInstructions(owner, facts, context, recentLines(deps.db, owner.id), chatName(deps.db.primaryHandle(owner.id)));
 }
 
