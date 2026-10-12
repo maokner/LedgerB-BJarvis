@@ -3,6 +3,7 @@ import type { Approvals } from "../approvals.js";
 import { describeAction } from "../actions.js";
 import { createCalendar, type Calendar } from "../calendar/google.js";
 import type { Money } from "../money.js";
+import type { Food } from "../food/food.js";
 import type { PhoneLinks } from "../phone.js";
 import { purchasesFact, type Purchases } from "../purchases.js";
 import type { Account, Db } from "../db.js";
@@ -29,7 +30,12 @@ export interface AgentDeps {
   purchases?: Purchases;
   /** Phone numbers linked for calls (src/phone.ts). Unset: calls are not available. */
   phone?: PhoneLinks;
+  /** Ordering food on DoorDash with USDC (src/food/). Unset: not available. */
+  food?: Food;
 }
+
+/** Food ordering where it works: it pays in USDC on Base, so demo money (the custom app) never offers it. */
+export const foodOf = (deps: Pick<AgentDeps, "food" | "money">): Food | undefined => (deps.money?.mode === "eth" ? deps.food : undefined);
 
 /** The calendar behind these deps; without one, AgentSign's own events table alone. */
 export const calendarOf = (deps: Pick<AgentDeps, "db" | "calendar">): Calendar => deps.calendar ?? createCalendar({ db: deps.db });
@@ -51,7 +57,7 @@ export function claimsProposal(text: string): boolean {
 }
 
 /** What both the persona and the engine know about the owner at the start of a turn, as prompt lines. */
-export function ownerFacts(db: Db, owner: Account, balance: string, calendar?: Calendar, purchases?: Purchases, phone?: PhoneLinks): string[] {
+export function ownerFacts(db: Db, owner: Account, balance: string, calendar?: Calendar, purchases?: Purchases, phone?: PhoneLinks, food?: Pick<Food, "fact">): string[] {
   const friends = db.friendsOf(owner.id);
   const google = calendar?.connection(owner.id);
   const googleLine = !calendar
@@ -79,6 +85,7 @@ export function ownerFacts(db: Db, owner: Account, balance: string, calendar?: C
     `Ledger policy, ${describePolicy(policyOf(owner))} ${owner.tag} can change it by asking (set_ledger_policy): a preset (relaxed, standard, strict) or one thing at a time.`,
     googleLine,
     purchasesFact(purchases, owner),
+    purchasesFact(food, owner, "EAT"),
     phoneFact(phone, owner),
     notes.length ? `Notes saved about ${owner.tag}:\n${notes.join("\n")}` : "",
   ].filter(Boolean);

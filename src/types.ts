@@ -20,7 +20,8 @@ export type ActionCode =
   | "FAC" // accept a friend request
   | "ACC" // create an account (bind this Ledger to a tag and a phone)
   | "DEL" // delete the owner's account (Ethereum app only; the custom app refuses it)
-  | "BUY"; // buy an item on Amazon: ETH to the operator's treasury, which orders with the operator's card (Ethereum app only)
+  | "BUY" // buy an item on Amazon: ETH to the operator's treasury, which orders with the operator's card (Ethereum app only)
+  | "EAT"; // order food on DoorDash: USDC to the operator's treasury, which orders on the operator's account (Ethereum app only)
 
 export const ACTION_TITLES: Record<ActionCode, string> = {
   PAY: "Send money",
@@ -30,11 +31,16 @@ export const ACTION_TITLES: Record<ActionCode, string> = {
   ACC: "Create account",
   DEL: "Delete account",
   BUY: "Buy on Amazon",
+  EAT: "Order food",
 };
 
 /** Codes signed as an EIP-1559 transfer in Ethereum mode (action.meta); every other code is a personal message. */
-export const TX_CODES: readonly ActionCode[] = ["PAY", "BUY"];
+export const TX_CODES: readonly ActionCode[] = ["PAY", "BUY", "EAT"];
 export const isTxCode = (code: ActionCode): boolean => TX_CODES.includes(code);
+/** Codes that pay the treasury for an order (src/purchases.ts): their own texts follow the payment, not the generic receipt. */
+export const PURCHASE_CODES = ["BUY", "EAT"] as const satisfies readonly ActionCode[];
+export type PurchaseCode = (typeof PURCHASE_CODES)[number];
+export const isPurchaseCode = (code: string): code is PurchaseCode => (PURCHASE_CODES as readonly string[]).includes(code);
 
 export interface ActionField {
   /** Printable ASCII, 1..16 bytes. Example: "To", "Amount", "When". */
@@ -50,7 +56,7 @@ export interface Action {
   id: string;
   /** 1..6 fields, shown in order. */
   fields: ActionField[];
-  /** Ethereum mode only, PAY and BUY: the transaction to sign. Not shown as fields and not part of encodeAction(). */
+  /** Ethereum mode only, PAY, BUY and EAT: the transaction to sign. Not shown as fields and not part of encodeAction(). */
   meta?: EthTxMeta;
 }
 

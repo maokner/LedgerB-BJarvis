@@ -6,7 +6,7 @@ import { describeAction } from "../actions.js";
 import type { Account } from "../db.js";
 import { demoMoney } from "../money.js";
 import { ACTION_TITLES, type Action } from "../types.js";
-import { calendarOf, claimsProposal, deliverNote, ownerFacts, runPeerTurn, toolLoop, type AgentDeps } from "./agent.js";
+import { calendarOf, claimsProposal, deliverNote, foodOf, ownerFacts, runPeerTurn, toolLoop, type AgentDeps } from "./agent.js";
 import { firstName } from "./bot.js";
 import { ownerTools, type Tools } from "./tools.js";
 import type { ChatMessage } from "./xai.js";
@@ -31,6 +31,7 @@ export function engineSystemPrompt(facts: string[], owner: Account): string {
     `- When ${name} answers a meeting a friend is arranging with them (yes, no, or a different time; the facts above list them), call answer_meeting. If they name a new time for a meeting they offered themselves, answer_meeting with another time offers it.`,
     `- To send a friend a note (a thank you, a hello, a reply, anything ${name} wants to say to them), call send_note with the note written as ${name} would say it, a sentence or two. It reaches the friend at once as a text from their own Jarvis; nothing to approve. message_agent only asks when a friend is free and never passes anything on to them.`,
     `- To buy something (only where the facts say Amazon is available): search_amazon first, pick the item that fits best within what ${name} said (cheapest match unless they said otherwise), then propose_action BUY with Item <its id>. It is paid in USDC on Base from ${name}'s address (the facts show the balance; a little ETH covers the fee). The tool quotes the exact total and refuses anything over the limit; if it does, report the price and the limit, do not look for ways around it. Never buy more than one thing per request, and never without a search result's id.`,
+    `- To order food (only where the facts say DoorDash is available): it delivers to the address in the facts. With none, ask ${name} for it; when they give their own, save it with set_delivery_address (an address for just this order goes in the address argument instead). Then search_doordash for what they want, doordash_menu for the restaurant that fits, and quote_doordash with the item_ids and quantities they asked for (tip 15% unless they said otherwise). If they did not say what they want, do not order on a guess: report two or three options (restaurant, a dish or two, prices, ETA) and stop. Otherwise propose_action EAT with Order <the quote_id> right after the quote, and report the restaurant, the items, the total all in and the ETA. Never propose EAT without a quote_id from quote_doordash, never add items they did not ask for, and if the quote is over the limit, report the total and the limit; do not look for ways around it.`,
     `- Use remember for lasting facts ${name} tells you.`,
     `- Phone (only where the facts have a Phone line): when ${name} gives their own number to link ("my number is", "link my phone"), call link_phone with it; unlink_phone only when asked. A four-digit code from a call is handled before you see it.`,
     `- Only if ${name} clearly asks to delete, close or reset their account, propose DEL (no fields). Never for anything less. Their Ledger is the confirmation, so do not ask them to confirm first.`,
@@ -80,6 +81,7 @@ export function engineTools(deps: AgentDeps, owner: Account, hooks: EngineHooks 
     money: deps.money,
     purchases: deps.purchases,
     phone: deps.phone,
+    food: foodOf(deps),
     deliver: hooks.deliver,
     attach: hooks.attach ?? (async (text) => void (await deps.channel.send(db.primaryHandle(owner.id)!, text))),
     onProposed: (action) => {
@@ -125,7 +127,7 @@ export async function runEngine(deps: AgentDeps, owner: Account, task: EngineTas
     ...(task.images.length ? { images: task.images } : {}),
   };
   return toolLoop(deps, {
-    system: engineSystemPrompt(ownerFacts(db, owner, balance, calendarOf(deps), deps.purchases, deps.phone), owner),
+    system: engineSystemPrompt(ownerFacts(db, owner, balance, calendarOf(deps), deps.purchases, deps.phone, foodOf(deps)), owner),
     messages: [user],
     tools,
     maxSteps: MAX_STEPS,

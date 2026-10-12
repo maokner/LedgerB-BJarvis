@@ -16,6 +16,7 @@ import type { ToolSpec } from "./xai.js";
 import { txLink } from "../chain.js";
 import { demoMoney, type Money } from "../money.js";
 import type { PhoneLinks } from "../phone.js";
+import type { Food } from "../food/food.js";
 import type { Purchases } from "../purchases.js";
 import { botMention } from "./bot.js";
 
@@ -137,12 +138,13 @@ export const OWNER_TOOL_SPECS: ToolSpec[] = [
       "CAL: the owner's own event (never a meeting with a friend: that is propose_meeting): Title, When as YYYY-MM-DD HH:MM-HH:MM (24h local time). " +
       "FRQ (friend request): To @tag. FAC (accept a friend request): From @tag. " +
       "DEL (delete the owner's own account, only when they clearly ask to delete, close or reset it): no fields needed. " +
-      "BUY (buy one item on Amazon, paid in ETH; only where the facts say Amazon is available): Item <the 10-character item id from search_amazon>. " +
-      "It quotes the exact total with shipping and tax, refuses anything over the limit, and the money comes back if the order does not go through.",
+      "BUY (buy one item on Amazon, paid in USDC; only where the facts say Amazon is available): Item <the 10-character item id from search_amazon>. " +
+      "It quotes the exact total with shipping and tax, refuses anything over the limit, and the money comes back if the order does not go through. " +
+      "EAT (order food on DoorDash, paid in USDC; only where the facts say DoorDash is available): Order <the quote_id from quote_doordash>. It prices the quoted order again and refuses anything over the limit.",
     parameters: {
       type: "object",
       properties: {
-        code: { type: "string", enum: ["PAY", "CAL", "FRQ", "FAC", "DEL", "BUY"] },
+        code: { type: "string", enum: ["PAY", "CAL", "FRQ", "FAC", "DEL", "BUY", "EAT"] },
         fields: {
           type: "array",
           items: { type: "object", properties: { label: { type: "string" }, value: { type: "string" } }, required: ["label", "value"] },
@@ -162,7 +164,58 @@ export const PURCHASE_TOOL_SPECS: ToolSpec[] = [
       "Pick the one that best fits what they asked (cheapest that matches, unless they said otherwise), then propose_action BUY with Item <id>. Never guess an item id.",
     parameters: { type: "object", properties: { query: { type: "string", description: "What to look for, like 'trident gum' or 'usb-c cable 6ft'" } }, required: ["query"] },
   },
-  { name: "list_purchases", description: "The owner's Amazon purchases through you: item, total, status (ordered, refunded, in progress), order number.", parameters: none },
+];
+
+/** Where Amazon or food ordering is set up: one list for both. */
+export const LIST_PURCHASES_SPEC: ToolSpec = {
+  name: "list_purchases",
+  description: "The owner's purchases through you (Amazon items, DoorDash food orders): store, what, total, status (ordered, refunded, in progress), order number.",
+  parameters: none,
+};
+
+/** Only where food ordering is set up (src/food/). */
+export const FOOD_TOOL_SPECS: ToolSpec[] = [
+  {
+    name: "set_delivery_address",
+    description: "Save the owner's delivery address for food orders. Only an address the owner gives as their own (home, work); never one you guessed. Replaces the saved one.",
+    parameters: { type: "object", properties: { address: { type: "string", description: "Street and number, apartment if any, city, ZIP, like '1 Market St Apt 5, San Francisco, CA 94105'" } }, required: ["address"] },
+  },
+  {
+    name: "search_doordash",
+    description: "Find restaurants on DoorDash that deliver to the owner's address and match what they feel like. Returns store ids, names, ratings, ETAs and delivery fees.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "A dish, a cuisine or a restaurant, like 'burrito', 'sushi' or 'chipotle'" },
+        address: { type: "string", description: "Only when the owner names a different address for this order; default the saved one" },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "doordash_menu",
+    description: "A DoorDash restaurant's menu: item ids, names and prices. Call it before quoting; never guess an item id.",
+    parameters: { type: "object", properties: { store_id: { type: "string", description: "The store_id from search_doordash" } }, required: ["store_id"] },
+  },
+  {
+    name: "quote_doordash",
+    description:
+      "Price an exact DoorDash order: the items and quantities from one restaurant, delivered to the owner's address. Returns the total all in (food, fees, tax, tip), the ETA and a quote_id. " +
+      "Then propose_action EAT with Order <quote_id>. Nothing is ordered by quoting.",
+    parameters: {
+      type: "object",
+      properties: {
+        store_id: { type: "string", description: "The store_id from search_doordash" },
+        items: {
+          type: "array",
+          items: { type: "object", properties: { item_id: { type: "string", description: "From doordash_menu" }, quantity: { type: "integer" } }, required: ["item_id", "quantity"] },
+        },
+        tip_percent: { type: "number", description: "Dasher tip as a percent of the food. Default 15" },
+        address: { type: "string", description: "Only when the owner names a different address for this order; default the saved one" },
+      },
+      required: ["store_id", "items"],
+    },
+  },
 ];
 
 /** Only where phone calls are set up (src/phone.ts). */
@@ -249,7 +302,7 @@ function readFields(raw: unknown): Map<string, string> {
 }
 
 /** Turns what the model proposed into an Action a device can show, or an error the model can act on. */
-export async function buildAction(db: Db, owner: Account, code: unknown, rawFields: unknown, money: Money = demoMoney(), purchases?: Purchases): Promise<{ action: Action; prompt?: string } | string> {
+export async function buildAction(db: Db, owner: Account, code: unknown, rawFields: unknown, money: Money = demoMoney(), purchases?: Purchases, food?: Food): Promise<{ action: Action; prompt?: string } | string> {
   const f = readFields(rawFields);
   const fields: ActionField[] = [];
   const person = (label: string): Account | string => {
@@ -305,8 +358,13 @@ export async function buildAction(db: Db, owner: Account, code: unknown, rawFiel
       if (!purchases || money.mode !== "eth") return "Error: buying on Amazon is not available on this server. Tell the owner it cannot be done here.";
       return purchases.propose(owner, f.get("item") ?? f.get("asin") ?? "");
     }
+    case "EAT": {
+      // Paid in USDC to the treasury like BUY; the quote id names a draft from quote_doordash that only this owner can pay for.
+      if (!food || money.mode !== "eth") return "Error: ordering food is not available on this server. Tell the owner it cannot be done here.";
+      return food.propose(owner, f.get("order") ?? f.get("quote_id") ?? f.get("quote") ?? "");
+    }
     default:
-      return "Error: code must be PAY, CAL, FRQ, FAC, DEL or BUY.";
+      return "Error: code must be PAY, CAL, FRQ, FAC, DEL, BUY or EAT.";
   }
   return { action: { code, id: newActionId(), fields } };
 }
@@ -335,9 +393,12 @@ export function ownerTools(deps: {
   purchases?: Purchases;
   /** Phone numbers for calls, where the server is set up for them. */
   phone?: PhoneLinks;
+  /** Ordering food on DoorDash with USDC, where the server is set up for it (Ethereum mode only). */
+  food?: Food;
 }): Tools {
   const { db, approvals, owner, calendar, purchases, phone } = deps;
   const money = deps.money ?? demoMoney();
+  const food = money.mode === "eth" ? deps.food : undefined;
   const meetings: MeetingDeps = { db, calendar, channel: deps.channel, log: deps.log, approvals, deliver: deps.deliver, onProposed: deps.onProposed };
   const settled = (line: string) => {
     if (!/^(Error|Refused)\b/.test(line)) deps.onSettled?.(line);
@@ -352,7 +413,13 @@ export function ownerTools(deps: {
     return target;
   };
   return {
-    specs: [...OWNER_TOOL_SPECS, ...(purchases ? PURCHASE_TOOL_SPECS : []), ...(phone ? PHONE_TOOL_SPECS : [])],
+    specs: [
+      ...OWNER_TOOL_SPECS,
+      ...(purchases ? PURCHASE_TOOL_SPECS : []),
+      ...(food ? FOOD_TOOL_SPECS : []),
+      ...(purchases || food ? [LIST_PURCHASES_SPEC] : []),
+      ...(phone ? PHONE_TOOL_SPECS : []),
+    ],
     async run(name, args) {
       const me = db.account(owner.id)!;
       switch (name) {
@@ -367,8 +434,21 @@ export function ownerTools(deps: {
           if (!purchases) return "Error: buying on Amazon is not available on this server.";
           return purchases.search(String(args.query ?? ""));
         case "list_purchases":
-          if (!purchases) return "Error: buying on Amazon is not available on this server.";
-          return JSON.stringify(purchases.list(me.id));
+          if (!purchases && !food) return "Error: buying on Amazon is not available on this server.";
+          // Both stores, newest first.
+          return JSON.stringify([...(purchases?.list(me.id) ?? []), ...(food?.list(me.id) ?? [])].sort((a, b) => String(b.at).localeCompare(String(a.at))));
+        case "set_delivery_address":
+        case "search_doordash":
+        case "doordash_menu":
+        case "quote_doordash": {
+          if (!food) return "Error: ordering food is not available on this server.";
+          if (name === "set_delivery_address") return food.setAddress(me, String(args.address ?? ""));
+          if (name === "search_doordash") return food.restaurants(me, String(args.query ?? ""), args.address ? String(args.address) : undefined);
+          if (name === "doordash_menu") return food.menu(String(args.store_id ?? ""));
+          const items = Array.isArray(args.items) ? (args.items as { item_id?: unknown; quantity?: unknown }[]).map((i) => ({ itemId: String(i?.item_id ?? "").trim(), quantity: Number(i?.quantity ?? 1) })) : [];
+          const tip = args.tip_percent === undefined || args.tip_percent === null || args.tip_percent === "" ? undefined : Number(args.tip_percent);
+          return food.quote(me, { storeId: String(args.store_id ?? ""), items, ...(tip !== undefined ? { tipPercent: tip } : {}), ...(args.address ? { address: String(args.address) } : {}) });
+        }
         case "get_balance":
           return `Balance: ${await money.balanceText(me)}`;
         case "list_friends":
@@ -486,7 +566,7 @@ export function ownerTools(deps: {
           return settled(`Ledger policy is now ${describePolicy(next)} Takes effect right away.`);
         }
         case "propose_action": {
-          const proposal = await buildAction(db, me, args.code, args.fields, money, purchases);
+          const proposal = await buildAction(db, me, args.code, args.fields, money, purchases, food);
           if (typeof proposal === "string") return proposal;
           const { action, prompt } = proposal;
           const guard = guardOf(action.code);
@@ -499,6 +579,7 @@ export function ownerTools(deps: {
           } catch (err) {
             if ((err as Error).message === PENDING_ERROR) {
               if (action.code === "BUY") purchases?.cancel(action.id);
+              if (action.code === "EAT") food?.cancel(action.id);
               const pending = db.pendingAction(me.id);
               const what = pending ? ` (${describeAction({ code: pending.code as Action["code"], id: pending.id, fields: pending.fields }, ACTION_TITLES)})` : "";
               return `Error: ${PENDING_ERROR}${what} on the owner's Ledger before proposing another action.`;

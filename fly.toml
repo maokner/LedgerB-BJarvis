@@ -29,6 +29,9 @@ swap_size_mb = 512
   TREASURY_ADDRESS = "0xf8381484CD2639618c690572aB35ff65E4bd7C5e"
   AMAZON_MERCHANT = "mock"
   PURCHASE_LIMIT_USD = "20"
+  # Ordering food: the demo DoorDash (every order confirmed, nothing bought), paid to the same treasury. See "Ordering food on DoorDash" in DESIGN.md.
+  FOOD_PROVIDER = "demo"
+  FOOD_LIMIT_USD = "40"
   TZ = "America/Los_Angeles"
 
 [http_service]

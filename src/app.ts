@@ -8,6 +8,7 @@ import { createCalendar, type Calendar } from "./calendar/google.js";
 import type { Account, Db } from "./db.js";
 import { demoMoney, type Money } from "./money.js";
 import type { PhoneLinks } from "./phone.js";
+import type { Food } from "./food/food.js";
 import type { Purchases } from "./purchases.js";
 import { normalizeHandle, parseTag } from "./handles.js";
 import { answerMeeting } from "./meetings.js";
@@ -54,6 +55,8 @@ export interface AppOptions {
   purchases?: Purchases;
   /** Phone numbers linked for calls (src/phone.ts). Default: calls are not available. */
   phone?: PhoneLinks;
+  /** Ordering food on DoorDash with USDC (src/food/): a second purchases pipeline, code EAT. Default: not available. */
+  food?: Food;
 }
 
 /**
@@ -119,14 +122,17 @@ export function createApp(options: AppOptions): App & AppVoiceHooks & { approval
   const calendar = options.calendar ?? createCalendar({ db, log });
   const purchases = options.purchases;
   const phone = options.phone;
+  const food = options.food;
+  // Each pipeline follows only its own code (BUY, EAT), so every settled action goes to all of them.
+  const stores = [purchases, food].filter((s) => s !== undefined);
   const approvals = createApprovals({
     db, deviceManager, channel, titles: ACTION_TITLES, log, signTimeoutMs: options.signTimeoutMs, money, calendar,
-    onSettled: purchases ? (action, status, extra) => purchases.onSettled(action, status, extra) : undefined,
+    onSettled: stores.length ? (action, status, extra) => stores.forEach((s) => s.onSettled(action, status, extra)) : undefined,
   });
   // Purchases a previous run left in flight continue now that approvals have expired their stale actions.
-  purchases?.resume();
+  for (const s of stores) s.resume();
   const personaModel = (options.personaModel ?? process.env.XAI_PERSONA_MODEL ?? DEFAULT_PERSONA_MODEL) || undefined;
-  const deps: AgentDeps = { db, model, approvals, channel, log, money, personaModel, calendar, purchases, phone };
+  const deps: AgentDeps = { db, model, approvals, channel, log, money, personaModel, calendar, purchases, phone, food };
   const createTitle = money.mode === "eth" ? "Verify address" : "Create account";
   const turns = new Map<string, Promise<void>>();
   /** Onboarding approvals in flight, by handle: the tag and device they claimed. */
@@ -425,7 +431,7 @@ export function createApp(options: AppOptions): App & AppVoiceHooks & { approval
     async whenIdle() {
       await Promise.all(turns.values());
       await approvals.whenIdle();
-      await purchases?.whenIdle();
+      for (const s of stores) await s.whenIdle();
     },
     async close() {
       await Promise.all(turns.values());

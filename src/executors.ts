@@ -87,6 +87,11 @@ export function execute(db: Db, ctx: ExecContext, action: Action): ExecResult {
       const amount = field(action, "USDC") ? `${field(action, "USDC")} USDC` : `${need(action, "ETH")} ETH`;
       return done([{ handle: ownerHandle, text: `Paid ${amount} (${need(action, "Total")}) to the treasury on Base for ${item}. I'll place the Amazon order as soon as Base confirms it. ${txLink(ctx.txHash)}` }]);
     }
+    case "EAT": {
+      // Like BUY: the USDC is on its way to the treasury; src/purchases.ts (through src/food/) places the order once Base confirms.
+      if (!ctx.txHash) throw new ExecutorError("Ordering food needs a payment on Base, so nothing happened.");
+      return done([{ handle: ownerHandle, text: `Paid ${need(action, "USDC")} USDC (${need(action, "Total")}) to the treasury on Base for ${need(action, "Order")} from ${need(action, "From")}. I'll place the DoorDash order as soon as Base confirms it. ${txLink(ctx.txHash)}` }]);
+    }
     case "CAL": {
       // The owner's own event, or their side of a meeting (With @friend) when their policy sends meetings to the Ledger.
       const title = need(action, "Title");

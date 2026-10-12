@@ -62,6 +62,13 @@ PURCHASE_LIMIT_USD="$(env_get PURCHASE_LIMIT_USD "$ENV_FILE")"
 PURCHASE_SHIPS_TO="$(env_get PURCHASE_SHIPS_TO "$ENV_FILE")"
 OPERATOR_TAG="$(env_get OPERATOR_TAG "$ENV_FILE")"
 OPERATOR_NAME="$(env_get OPERATOR_NAME "$ENV_FILE")"
+# Ordering food (see "Ordering food on DoorDash" in DESIGN.md): the provider, the DoorDash session and the knobs.
+FOOD_PROVIDER="$(env_get FOOD_PROVIDER "$ENV_FILE")"
+DOORDASH_STORAGE_STATE="$(env_get DOORDASH_STORAGE_STATE "$ENV_FILE")"
+DOORDASH_STORAGE_STATE_PATH="$(env_get DOORDASH_STORAGE_STATE_PATH "$ENV_FILE")"
+DOORDASH_DRY_RUN="$(env_get DOORDASH_DRY_RUN "$ENV_FILE")"
+DOORDASH_CLI="$(env_get DOORDASH_CLI "$ENV_FILE")"
+FOOD_LIMIT_USD="$(env_get FOOD_LIMIT_USD "$ENV_FILE")"
 # Calling Jarvis (voice/TWILIO.md): OpenAI's realtime model behind a Twilio number.
 OPENAI_API_KEY="$(env_get OPENAI_API_KEY "$ENV_FILE")"
 OPENAI_REALTIME_MODEL="$(env_get OPENAI_REALTIME_MODEL "$ENV_FILE")"
@@ -74,7 +81,14 @@ if [ -z "$AMAZON_STORAGE_STATE" ] && [ -n "$AMAZON_STORAGE_STATE_PATH" ]; then
   [ -f "$AMAZON_STORAGE_STATE_PATH" ] || die "AMAZON_STORAGE_STATE_PATH points to $AMAZON_STORAGE_STATE_PATH, which does not exist (run: pnpm amazon:login)"
   AMAZON_STORAGE_STATE="$(base64 < "$AMAZON_STORAGE_STATE_PATH" | tr -d '\n')"
 fi
-if [ -n "$TREASURY_PRIVATE_KEY" ] && [ -z "$AMAZON_STORAGE_STATE" ] && [ "$AMAZON_MERCHANT" != demo ]; then
+# The DoorDash session travels the same way.
+if [ -z "$DOORDASH_STORAGE_STATE" ] && [ -n "$DOORDASH_STORAGE_STATE_PATH" ]; then
+  [ -f "$DOORDASH_STORAGE_STATE_PATH" ] || die "DOORDASH_STORAGE_STATE_PATH points to $DOORDASH_STORAGE_STATE_PATH, which does not exist (run: pnpm doordash:login)"
+  DOORDASH_STORAGE_STATE="$(base64 < "$DOORDASH_STORAGE_STATE_PATH" | tr -d '\n')"
+fi
+[ "$FOOD_PROVIDER" != browser ] || [ -n "$DOORDASH_STORAGE_STATE" ] || die "FOOD_PROVIDER=browser needs a DoorDash session: run pnpm doordash:login and set DOORDASH_STORAGE_STATE_PATH"
+[ "$FOOD_PROVIDER" != cli ] || echo "warning: FOOD_PROVIDER=cli needs dd-cli inside the image at DOORDASH_CLI; the Dockerfile does not install it, so food ordering will fail there"
+if [ -n "$TREASURY_PRIVATE_KEY" ] && [ -z "$AMAZON_STORAGE_STATE" ] && [ "$AMAZON_MERCHANT" != demo ] && [ "$AMAZON_MERCHANT" != mock ] && [ -z "$FOOD_PROVIDER" ]; then
   die "TREASURY_PRIVATE_KEY is set but there is no Amazon session: run pnpm amazon:login and set AMAZON_STORAGE_STATE_PATH, or AMAZON_MERCHANT=demo"
 fi
 PUBLIC_URL="https://${APP}.fly.dev"
@@ -149,9 +163,12 @@ names=(XAI_API_KEY TELEGRAM_BOT_TOKEN TELEGRAM_BOT_USERNAME MCP_TOKEN PUBLIC_URL
 # Buying on Amazon (optional): the treasury key, the session, and the knobs that are set.
 [ -n "$TREASURY_PRIVATE_KEY" ] && names+=(TREASURY_PRIVATE_KEY)
 [ -n "$AMAZON_STORAGE_STATE" ] && names+=(AMAZON_STORAGE_STATE)
+# Ordering food (optional): the DoorDash session; FOOD_PROVIDER and the knobs ride in the loop below.
+[ -n "$DOORDASH_STORAGE_STATE" ] && names+=(DOORDASH_STORAGE_STATE)
 # Calling Jarvis (optional): the OpenAI key, Twilio's auth token and the number; after the deploy, scripts/twilio-setup.sh points the number here.
 [ -n "$OPENAI_API_KEY" ] && names+=(OPENAI_API_KEY TWILIO_AUTH_TOKEN TWILIO_PHONE_NUMBER)
-for name in OPENAI_REALTIME_MODEL OPENAI_VOICE TWILIO_ACCOUNT_SID AMAZON_MERCHANT AMAZON_DRY_RUN PURCHASE_LIMIT_USD PURCHASE_SHIPS_TO OPERATOR_TAG OPERATOR_NAME; do
+for name in OPENAI_REALTIME_MODEL OPENAI_VOICE TWILIO_ACCOUNT_SID AMAZON_MERCHANT AMAZON_DRY_RUN PURCHASE_LIMIT_USD PURCHASE_SHIPS_TO OPERATOR_TAG OPERATOR_NAME \
+  FOOD_PROVIDER DOORDASH_DRY_RUN DOORDASH_CLI FOOD_LIMIT_USD; do
   [ -n "${!name}" ] && names+=("$name")
 done
 # Values go through stdin, never argv or the terminal. --stage: the deploy below picks them up.

@@ -1,5 +1,6 @@
 /**
- * A merchant the agent can buy from with the operator's own card and account (today: Amazon, see src/amazon/).
+ * A merchant the agent can buy from with the operator's own card and account (Amazon, see src/amazon/; DoorDash through
+ * the adapter in src/food/food.ts).
  *
  * The contract is staged, like a card authorization: `search` finds products, `prepare` runs the checkout up to the
  * last page and reads the exact total without ordering, `confirm` places the order for a saved quote. Nothing is held
@@ -9,6 +10,7 @@
  * `confirm` may only answer `no_purchase` when it is certain nothing was ordered. Anything it cannot tell
  * (a timeout after pressing the order button, an unexpected page) is `uncertain`: a person then looks, nothing retries.
  */
+import type { FoodQuote } from "./food/provider.js";
 
 export interface Product {
   /** Amazon's item id, 10 characters. */
@@ -32,10 +34,13 @@ export interface Quote {
   totalCents: number;
   /** Unix ms. confirm() after this re-quotes and compares totals. */
   expiresAt: number;
+  /** A food order (src/food/): the provider's full quote, which confirm() places. Unset for Amazon. */
+  food?: FoodQuote;
 }
 
 export type Outcome =
-  | { status: "ordered"; orderId: string; totalCents: number }
+  /** etaMinutes: a delivery's estimate when the store gave one (food). */
+  | { status: "ordered"; orderId: string; totalCents: number; etaMinutes?: number }
   /** Certain that nothing was ordered and nothing charged. */
   | { status: "no_purchase"; reason: string }
   /** Cannot tell whether an order was placed. Never refunded automatically. */

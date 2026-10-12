@@ -14,6 +14,7 @@
     "voice:chat": "tsx scripts/voice-chat.ts",
     "build:web": "tsx scripts/build-web.ts",
     "amazon:login": "tsx scripts/amazon-login.ts",
+    "doordash:login": "tsx scripts/doordash-login.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
