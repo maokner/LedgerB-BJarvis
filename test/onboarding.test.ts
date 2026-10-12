@@ -9,7 +9,7 @@ import { askEthApp, type EthRequest } from "../src/device/eth-tx.js";
 import { combineDeviceManagers, createRemoteDeviceManager } from "../src/device/remote.js";
 import { baseMoney } from "../src/money.js";
 import { startWebServer, type WebServer } from "../src/web/server.js";
-import { call, fakeChannel, fakeEthApp, fakeEthDevices, harness, inbound, PHONES, say, scriptedModel, stubChain, tgInbound } from "./helpers.js";
+import { call, delegate, fakeChannel, fakeEthApp, fakeEthDevices, harness, inbound, PHONES, say, scriptedModel, stubChain, tgInbound } from "./helpers.js";
 
 describe("onboarding", () => {
   it("creates accounts bound to the free device, one per Ledger", async () => {
@@ -186,10 +186,51 @@ describe("Telegram sign-up (the @username is the default tag)", () => {
     expect(resolveTag(h.db, matt, "@Yadu_TG")).toMatchObject({ tag: "@yadu" });
     process.env.TELEGRAM_BOT_USERNAME = "AgentSignBot";
     try {
-      expect(resolveTag(h.db, matt, "@zelda")).toMatch(/they need to open @AgentSignBot on Telegram and press Start first/);
+      expect(resolveTag(h.db, matt, "@zelda")).toMatch(/they need to open @AgentSignBot on Telegram, press Start and set up with their own Ledger first/);
     } finally {
       delete process.env.TELEGRAM_BOT_USERNAME;
     }
+  });
+});
+
+describe("people by phone number or email (iMessage handles)", () => {
+  const env = { CHANNEL: process.env.CHANNEL, PHOTON_NUMBER: process.env.PHOTON_NUMBER };
+  afterEach(() => {
+    for (const [k, v] of Object.entries(env)) if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  });
+
+  it("resolves an exact number in any format, or an email, and never guesses from digits", () => {
+    process.env.CHANNEL = "photon";
+    process.env.PHOTON_NUMBER = "+14155550199";
+    const h = harness(0);
+    const matt = h.db.createAccount("@matt", "01".repeat(32), PHONES.matt, 0);
+    h.db.createAccount("@gabriel", "02".repeat(32), PHONES.gabriel, 0);
+    h.db.createAccount("@yadu", "03".repeat(32), "yadu@icloud.com", 0);
+    expect(resolveTag(h.db, matt, "+1 (415) 555-0002")).toMatchObject({ tag: "@gabriel" });
+    expect(resolveTag(h.db, matt, "415-555-0002")).toMatchObject({ tag: "@gabriel" });
+    expect(resolveTag(h.db, matt, "Yadu@iCloud.com")).toMatchObject({ tag: "@yadu" });
+    // A number nobody signed up from is not a prefix match on anyone, and the hint says how to join on iMessage.
+    const missing = resolveTag(h.db, matt, "+1 415 555 0009");
+    expect(missing).toMatch(/^Error: nobody on AgentSign has the number or email "\+1 415 555 0009"/);
+    expect(missing).toContain("they need to text Jarvis at +14155550199 on iMessage and set up with their own Ledger first");
+    expect(resolveTag(h.db, matt, "@zelda")).not.toMatch(/telegram/i);
+    // Tags and the fuzzy rules still work as before.
+    expect(resolveTag(h.db, matt, "gabe")).toMatchObject({ tag: "@gabriel" });
+  });
+
+  it("'send $5 to +1 415 555 0002' pays the account that signed up from that number", async () => {
+    const h = harness(2);
+    await h.onboard("matt", 0);
+    const gabriel = await h.onboard("gabriel", 1);
+    h.script(
+      delegate("pay +1 415 555 0002 $5"),
+      call("propose_action", { code: "PAY", fields: [{ label: "To", value: "+1 415 555 0002" }, { label: "Amount", value: "$5" }] }),
+      say("$5 to @gabriel, coming right up."),
+    );
+    await h.send(PHONES.matt, "send $5 to +1 415 555 0002");
+    expect(h.devices[0]!.shown.at(-1)?.fields).toEqual([{ label: "To", value: "@gabriel" }, { label: "Amount", value: "$5.00" }]);
+    expect(h.db.account(gabriel.id)!.balance_cents).toBe(25_500);
   });
 });
 
@@ -261,6 +302,27 @@ describe("remote onboarding (Ethereum mode, Ledger on another computer)", () => 
     await h.app.whenIdle();
     expect(h.db.accountByTag("@gabe")?.pubkey).toBe(addr(gabe));
     expect(h.db.accountByTag("@matt")?.pubkey).toBe(addr(matt));
+  });
+
+  it("iMessage: a stranger has no username, so the greeting asks for a tag and offers the link, never Telegram", async () => {
+    const before = process.env.CHANNEL;
+    process.env.CHANNEL = "photon";
+    try {
+      const h = await setup();
+      // The scripted model has no steps, so the stranger turn fails and the fixed greeting goes out.
+      await h.app.handleInbound(inbound(PHONES.gabriel, "hi"));
+      const [hello] = h.ch.to(PHONES.gabriel);
+      expect(hello).toBe(greeting("the Ethereum app", true));
+      expect(hello).toContain("tell me the tag you want, like @matt. Then you approve it on your Ledger with the Ethereum app open, from Chrome on any computer through a link I send.");
+      expect(hello).not.toMatch(/telegram|press start|plug your ledger into the mac/i);
+      const token = await h.signUp(PHONES.gabriel, "@gabe");
+      expect((await h.page(token, gabe)).status).toBe(200);
+      await h.app.whenIdle();
+      expect(h.db.accountByHandle(PHONES.gabriel)).toMatchObject({ tag: "@gabe", pubkey: addr(gabe), username: null });
+    } finally {
+      if (before === undefined) delete process.env.CHANNEL;
+      else process.env.CHANNEL = before;
+    }
   });
 
   it("Telegram: 'link' sends the page straight away, and 'go' with no free USB Ledger falls back to it", async () => {

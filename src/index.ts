@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createModel, DEFAULT_MODEL } from "./agent/xai.js";
 import { createApp } from "./app.js";
 import { createCalendar } from "./calendar/google.js";
-import { createDevChannel, createIMessageChannel, createTelegramChannel } from "./channels/index.js";
+import { createDevChannel, createIMessageChannel, createPhotonChannel, createTelegramChannel } from "./channels/index.js";
 import { openDb } from "./db.js";
 import { createBaseChain, formatUsdc, USDC } from "./chain.js";
 import { combineDeviceManagers, createDeviceManager, createEthDeviceManager, createRemoteDeviceManager, parseDevicesEnv } from "./device/index.js";
@@ -28,12 +28,20 @@ const log = (line: string) => console.log(`${new Date().toISOString()} ${line}`)
 
 const flag = process.argv.indexOf("--channel");
 const telegramToken = process.env.TELEGRAM_BOT_TOKEN?.trim();
-// Telegram is the default once a bot token is set; iMessage otherwise.
-const channelName = (flag >= 0 ? process.argv[flag + 1] : undefined) || process.env.CHANNEL || (telegramToken ? "telegram" : "imessage");
+const spectrumId = process.env.SPECTRUM_PROJECT_ID?.trim();
+const spectrumSecret = process.env.SPECTRUM_PROJECT_SECRET?.trim();
+// Photon's hosted iMessage once a Spectrum project is set, else Telegram once a bot token is set, else the Mac's iMessage.
+const channelName = (flag >= 0 ? process.argv[flag + 1] : undefined) || process.env.CHANNEL || (spectrumId ? "photon" : telegramToken ? "telegram" : "imessage");
 if (channelName === "telegram" && !telegramToken) {
   console.error("CHANNEL=telegram needs TELEGRAM_BOT_TOKEN. Create a bot with @BotFather (/newbot) and put its token in .env.");
   process.exit(1);
 }
+if (channelName === "photon" && !(spectrumId && spectrumSecret)) {
+  console.error("CHANNEL=photon needs SPECTRUM_PROJECT_ID and SPECTRUM_PROJECT_SECRET. Copy them from the Photon dashboard (project Settings) into .env.");
+  process.exit(1);
+}
+// The prompts (src/agent/bot.ts) name the chat and say how people join by the channel that runs.
+process.env.CHANNEL = channelName;
 const apiKey = process.env.XAI_API_KEY;
 if (!apiKey) {
   console.error("XAI_API_KEY is missing. Put it in .env or ~/.grok/.env.");
@@ -96,8 +104,19 @@ let channel: Channel;
 if (channelName === "dev") channel = createDevChannel({ port: Number(process.env.DEV_PORT || 7777), log });
 else if (channelName === "imessage") channel = createIMessageChannel({ log });
 else if (channelName === "telegram") channel = createTelegramChannel({ token: telegramToken!, log: (line) => log(`[telegram] ${line}`) });
-else {
-  console.error(`Unknown channel "${channelName}". Use telegram, imessage or dev.`);
+else if (channelName === "photon") {
+  // PHOTON_NUMBER: the line people text, as Jarvis tells them. Each person's chat id is kept so a restart can still text them.
+  const number = process.env.PHOTON_NUMBER?.trim() || undefined;
+  if (!number) log("photon: PHOTON_NUMBER unset, so Jarvis cannot tell people which number to text");
+  channel = createPhotonChannel({
+    projectId: spectrumId!,
+    projectSecret: spectrumSecret!,
+    number,
+    log: (line) => log(`[photon] ${line}`),
+    spaces: { get: (handle) => db.setting(`photon_space:${handle}`), set: (handle, id) => db.setSetting(`photon_space:${handle}`, id) },
+  });
+} else {
+  console.error(`Unknown channel "${channelName}". Use photon, telegram, imessage or dev.`);
   process.exit(1);
 }
 const model = createModel({ apiKey, model: process.env.XAI_MODEL || DEFAULT_MODEL, baseUrl: process.env.XAI_BASE_URL });
