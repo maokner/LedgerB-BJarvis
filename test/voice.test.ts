@@ -84,7 +84,7 @@ describe("instructions", () => {
     h.befriend(matt.id, h.db.accountByTag("@yadu")!.id);
     const text = await instructionsFor(h.app.deps, matt, "Matt is demoing at a hackathon.");
     for (const s of ["Jarvis", "@matt (Matt)", "$250.00", "@yadu", "Waiting on @matt's Ledger: nothing", "propose_action", "Never read addresses", "Matt is demoing at a hackathon."]) expect(text).toContain(s);
-    for (const s of ["text_owner", "look_at_chat", "never say you cannot see", "the link is in your chat"]) expect(text).toContain(s);
+    for (const s of ["text_owner", "look_at_chat", "never say you cannot see", "the link is in your texts"]) expect(text).toContain(s);
     expect(text).not.toContain("Telegram");
   });
   it("walks a stranger to a tag", async () => {

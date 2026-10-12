@@ -12,3 +12,4 @@ device-app/target/
 device-app/build/
 __pycache__/
 .DS_Store
+.claude/worktrees/
