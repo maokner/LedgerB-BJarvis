@@ -44,7 +44,7 @@ export const NOTE_MAX = 500;
 export const OWNER_TOOL_SPECS: ToolSpec[] = [
   { name: "get_balance", description: "The owner's current balance.", parameters: none },
   { name: "list_friends", description: "Friends (whose agents can talk to this one) and pending friend requests.", parameters: none },
-  { name: "get_calendar", description: "The owner's calendar events in a time range: their Google Calendar when it is connected, plus events added through AgentSign.", parameters: range },
+  { name: "get_calendar", description: "The owner's calendar events in a time range: their Google Calendar when it is connected (with location, notes, organizer, attendees, the owner's reply and links when Google has them), plus events added through AgentSign.", parameters: range },
   {
     name: "connect_google_calendar",
     description:
@@ -526,7 +526,12 @@ export function ownerTools(deps: {
             timezone: TIMEZONE,
             google: google ? `connected as ${google.email}` : "not connected",
             ...(warning ? { warning } : {}),
-            events: events.map((e) => ({ title: e.title, start: e.start, end: e.end, ...(e.with ? { with: e.with } : {}), ...(e.allDay ? { allDay: true } : {}), source: e.source })),
+            // Google's details ride along when they exist: where, notes, who, the owner's answer, the links.
+            events: events.map((e) => ({
+              title: e.title, start: e.start, end: e.end, ...(e.with ? { with: e.with } : {}), ...(e.allDay ? { allDay: true } : {}), source: e.source,
+              ...(e.location ? { location: e.location } : {}), ...(e.notes ? { notes: e.notes } : {}), ...(e.organizer ? { organizer: e.organizer } : {}),
+              ...(e.attendees ? { attendees: e.attendees } : {}), ...(e.myStatus ? { myStatus: e.myStatus } : {}), ...(e.link ? { link: e.link } : {}), ...(e.call ? { call: e.call } : {}),
+            })),
           });
         }
         case "connect_google_calendar": {

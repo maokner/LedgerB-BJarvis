@@ -216,7 +216,12 @@ describe("google calendar", () => {
     await consent(s.get, /https:\S+/.exec(s.to(PHONES.matt).at(-1)!)![0]);
     s.google.state.events.push(
       { id: "dentist", summary: "Dentist", start: { dateTime: "2026-10-11T09:00:00-07:00" }, end: { dateTime: "2026-10-11T10:00:00-07:00" } },
-      { id: "ooo", summary: "Conference", start: { date: "2026-10-11" }, end: { date: "2026-10-12" } },
+      {
+        id: "ooo", summary: "Conference", start: { date: "2026-10-11" }, end: { date: "2026-10-12" },
+        location: "167 Rue de la Roquette, 75011 Paris, France", description: "Stay at <b>Chez Mia</b>.<br>Check-in after 3pm.&nbsp;Code 4471", htmlLink: "https://www.google.com/calendar/event?eid=ooo",
+        organizer: { email: "unknownorganizer@calendar.google.com", displayName: "Google Calendar" },
+        attendees: [{ email: "matt@gmail.com", self: true, responseStatus: "accepted" }, { email: "mia@chezmia.fr", displayName: "Mia" }],
+      },
       { id: "fyi", summary: "Optional standup", transparency: "transparent", start: { dateTime: "2026-10-11T11:00:00-07:00" }, end: { dateTime: "2026-10-11T11:30:00-07:00" } },
       { id: "no", summary: "Declined", attendees: [{ self: true, responseStatus: "declined" }], start: { dateTime: "2026-10-11T15:00:00-07:00" }, end: { dateTime: "2026-10-11T16:00:00-07:00" } },
       { id: "gone", summary: "Cancelled", status: "cancelled", start: { dateTime: "2026-10-11T16:00:00-07:00" }, end: { dateTime: "2026-10-11T17:00:00-07:00" } },
@@ -225,11 +230,15 @@ describe("google calendar", () => {
     const read = await s.calendar.events(s.matt.id, "2026-10-11T00:00", "2026-10-12T00:00");
     expect(read.warning).toBeUndefined();
     expect(read.events).toEqual([
-      { title: "Conference", start: "2026-10-11T00:00", end: "2026-10-12T00:00", allDay: true, source: "google" },
+      {
+        title: "Conference", start: "2026-10-11T00:00", end: "2026-10-12T00:00", allDay: true, source: "google",
+        location: "167 Rue de la Roquette, 75011 Paris, France", notes: "Stay at Chez Mia.\nCheck-in after 3pm. Code 4471", organizer: "Google Calendar", attendees: ["Mia"], myStatus: "accepted",
+        link: "https://www.google.com/calendar/event?eid=ooo",
+      },
       { title: "Dentist", start: "2026-10-11T09:00", end: "2026-10-11T10:00", source: "google" },
       { title: "Optional standup", start: "2026-10-11T11:00", end: "2026-10-11T11:30", source: "google" },
       { title: "Old AgentSign lunch", start: "2026-10-11T12:00", end: "2026-10-11T12:30", with: "@yadu", source: "agentsign" },
-      { title: "Declined", start: "2026-10-11T15:00", end: "2026-10-11T16:00", source: "google" },
+      { title: "Declined", start: "2026-10-11T15:00", end: "2026-10-11T16:00", source: "google", myStatus: "declined" },
     ]);
     // Matt's agent, asked by Yadu's, shares busy intervals only: no all-day, no "free", no declined.
     s.script((req) => {
@@ -243,6 +252,7 @@ describe("google calendar", () => {
         { start: "2026-10-11T12:00", end: "2026-10-11T12:30" },
       ]);
       expect(JSON.stringify(req.messages)).not.toContain("Dentist");
+      expect(JSON.stringify(req.messages)).not.toContain("Roquette");
       return say("Free before 9, 10 to 12, after 12:30.");
     });
     const { runPeerTurn } = await import("../src/agent/agent.js");
@@ -252,9 +262,11 @@ describe("google calendar", () => {
       delegate("what's on my calendar tomorrow"),
       call("get_calendar", { from: "2026-10-11", to: "2026-10-11" }),
       (req) => {
-        const out = JSON.parse(String(req.messages.at(-1)!.content)) as { google: string; events: { title: string; source: string }[] };
+        const out = JSON.parse(String(req.messages.at(-1)!.content)) as { google: string; events: { title: string; source: string; location?: string; notes?: string; myStatus?: string }[] };
         expect(out.google).toBe("connected as matt@gmail.com");
         expect(out.events.map((e) => `${e.source}:${e.title}`)).toContain("google:Dentist");
+        // The engine sees Google's details, so a call or a text can answer "where am I staying?".
+        expect(out.events.find((e) => e.title === "Conference")).toMatchObject({ location: "167 Rue de la Roquette, 75011 Paris, France", notes: "Stay at Chez Mia.\nCheck-in after 3pm. Code 4471", myStatus: "accepted" });
         return say("Dentist at 9, lunch with Yadu at noon.");
       },
       say("Dentist at 9, lunch with Yadu at noon."),
@@ -291,7 +303,7 @@ describe("google calendar", () => {
     expect(s.db.events(s.matt.id, "2026-10-11T00:00", "2026-10-12T00:00")[0]!.google_event_id).toBe(event!.id);
     // Reading back shows it once, from Google.
     const read = await s.calendar.events(s.matt.id, "2026-10-11T00:00", "2026-10-12T00:00");
-    expect(read.events).toEqual([{ title: "Dentist", start: "2026-10-11T09:00", end: "2026-10-11T10:00", source: "google" }]);
+    expect(read.events).toEqual([{ title: "Dentist", start: "2026-10-11T09:00", end: "2026-10-11T10:00", source: "google", notes: "Added by Jarvis on AgentSign, approved on the owner's Ledger." }]);
     // A retry of the same row is a no-op on Google's side (409) and still marks it.
     s.db.raw.prepare("update events set google_event_id = null").run();
     expect(await s.calendar.afterEvent(s.matt.id)).toBe("It's on your Google Calendar too.");

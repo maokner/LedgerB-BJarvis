@@ -38,6 +38,19 @@ export interface CalendarEventView {
   allDay?: true;
   /** Where the event lives: Google Calendar, or only AgentSign's own table. */
   source: "google" | "agentsign";
+  /** Google's details, only for the owner's own reads (friends' agents get busy times alone). */
+  location?: string;
+  /** The description, HTML stripped and cut to a few hundred characters. */
+  notes?: string;
+  /** Who set it up, as a name or email. */
+  organizer?: string;
+  /** The other people on it, as names or emails. */
+  attendees?: string[];
+  /** The owner's own answer to the invitation. */
+  myStatus?: "accepted" | "declined" | "tentative" | "needsAction";
+  /** The event on calendar.google.com, and the video call when there is one. */
+  link?: string;
+  call?: string;
 }
 export interface CalendarRead {
   events: CalendarEventView[];
@@ -89,11 +102,25 @@ interface GoogleEvent {
   status?: string;
   summary?: string;
   description?: string;
+  location?: string;
   transparency?: string;
+  htmlLink?: string;
+  hangoutLink?: string;
   start?: { dateTime?: string; date?: string };
   end?: { dateTime?: string; date?: string };
-  attendees?: { self?: boolean; responseStatus?: string }[];
+  organizer?: { email?: string; displayName?: string; self?: boolean };
+  attendees?: { email?: string; displayName?: string; self?: boolean; organizer?: boolean; responseStatus?: string }[];
 }
+const NOTES_MAX = 600;
+/** A description as plain text: tags gone, entities and whitespace tidied, cut to NOTES_MAX. */
+function plainNotes(html: string): string {
+  const text = html
+    .replace(/<br\s*\/?>/gi, "\n").replace(/<\/(p|div|li)>/gi, "\n").replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  return text.length > NOTES_MAX ? `${text.slice(0, NOTES_MAX - 3).trimEnd()}...` : text;
+}
+const person = (p: { email?: string; displayName?: string } | undefined) => p?.displayName?.trim() || p?.email?.trim() || undefined;
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 /** A stored return_to as a link target: only plain http(s) URLs, anything else is dropped. */
@@ -189,15 +216,33 @@ export function createCalendar(o: CalendarOptions): Calendar {
 
   // ---- Reads ---------------------------------------------------------------------------------------------------
 
+  /** Everything on a Google event beyond its title and time: where, what, who, the owner's answer, the links. */
+  function details(e: GoogleEvent): Partial<CalendarEventView> {
+    const me = e.attendees?.find((a) => a.self);
+    const status = me?.responseStatus;
+    const others = (e.attendees ?? []).filter((a) => !a.self).map(person).filter((p): p is string => !!p);
+    const organizer = e.organizer && !e.organizer.self ? person(e.organizer) : undefined;
+    const notes = e.description ? plainNotes(e.description) : "";
+    return {
+      ...(e.location?.trim() ? { location: e.location.trim() } : {}),
+      ...(notes ? { notes } : {}),
+      ...(organizer ? { organizer } : {}),
+      ...(others.length ? { attendees: others.slice(0, 20) } : {}),
+      ...(status === "accepted" || status === "declined" || status === "tentative" || status === "needsAction" ? { myStatus: status } : {}),
+      ...(e.htmlLink ? { link: e.htmlLink } : {}),
+      ...(e.hangoutLink ? { call: e.hangoutLink } : {}),
+    };
+  }
+
   function view(e: GoogleEvent): CalendarEventView | undefined {
     if (e.status === "cancelled") return undefined;
     const title = e.summary?.trim() || "(no title)";
-    if (e.start?.date && e.end?.date) return { title, start: `${e.start.date}T00:00`, end: `${e.end.date}T00:00`, allDay: true, source: "google" };
+    if (e.start?.date && e.end?.date) return { title, start: `${e.start.date}T00:00`, end: `${e.end.date}T00:00`, allDay: true, source: "google", ...details(e) };
     if (!e.start?.dateTime || !e.end?.dateTime) return undefined;
     const start = new Date(e.start.dateTime);
     const end = new Date(e.end.dateTime);
     if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return undefined;
-    return { title, start: toLocal(start), end: toLocal(end), source: "google" };
+    return { title, start: toLocal(start), end: toLocal(end), source: "google", ...details(e) };
   }
   const declined = (e: GoogleEvent) => e.attendees?.some((a) => a.self && a.responseStatus === "declined") ?? false;
 

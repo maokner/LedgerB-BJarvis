@@ -139,6 +139,7 @@ A side whose policy gates meetings gets their half of a booked meeting as a `CAL
 Google Calendar (`src/calendar/google.ts`) is a per-owner mirror, not a second source of truth.
 An owner connects it through a one-time link (`/google/connect/<token>`, the OAuth state) that lands on `/google/callback`; the refresh token is stored on the account.
 Reads merge Google's events with AgentSign's own table (rows already mirrored come back from Google; the rest are listed from the table), and fall back to the table with a warning when Google is unreachable.
+The owner's own reads carry Google's details when it has them (location, the description as plain text, organizer, attendees, the owner's reply, the event and video-call links), so a text or a call can answer where a stay is or what the door code says.
 Friends' agents get busy intervals only; all-day, "free" and declined Google events do not count.
 Google is only ever written with rows AgentSign's own table already holds (a `CAL` the owner approved, or a meeting both friends said yes to): `afterEvent` pushes the row with an id derived from it (`agentsign<salt><row id>`), so a retry hits 409 instead of duplicating.
 
