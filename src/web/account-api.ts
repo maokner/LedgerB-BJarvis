@@ -9,6 +9,7 @@
  *                               (ethers verifyMessage recovers `address`); the nonce is single use and short lived.
  *                               Sets the session cookie (HttpOnly, SameSite=Lax, Secure on https).
  *   POST /api/logout            {}                                  -> { ok: true }     (clears the cookie)
+ *   GET  /api/info                                                  -> InfoView (public: how to reach Jarvis, for the front door)
  *   GET  /api/me                                                    -> MeView | 401 ApiError
  *   POST /api/google/connect    {}                                  -> { ok: true, url } | ApiError
  *   POST /api/google/disconnect {}                                  -> { ok: true } | ApiError
@@ -30,6 +31,16 @@ export interface LoginChallenge {
   nonce: string;
   /** Unix ms. */
   expiresAt: number;
+}
+
+/** What the page shows before anyone signs in: how to reach Jarvis. */
+export interface InfoView {
+  ok: true;
+  /** The number to text Jarvis at (E.164), when the server has one. */
+  text?: string;
+  /** Jarvis's own number or @bot on the channel that runs. */
+  jarvis?: string;
+  kind: "iMessage" | "Telegram" | "dev";
 }
 
 export interface ApiError {

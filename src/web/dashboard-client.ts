@@ -5,7 +5,7 @@
  * Every change goes back to /api/* (contract: src/web/account-api.ts). No framework: small DOM helpers, one render.
  */
 import { askEthApp } from "../device/eth-tx.js";
-import type { ActivityView, ConnectionAction, ConnectionView, LoginChallenge, MeView, PolicyChange, PolicyGuard, PolicyPreset, PolicyView } from "./account-api.js";
+import type { ActivityView, ConnectionAction, ConnectionView, InfoView, LoginChallenge, MeView, PolicyChange, PolicyGuard, PolicyPreset, PolicyView } from "./account-api.js";
 import { connectEthereum, hid, knownLedger, NO_HID, NOT_SECURE, Plain, plainError, rejected, release } from "./ledger-connect.js";
 import { ICONS } from "./theme.js";
 
@@ -90,6 +90,46 @@ function jarvisLink(m: MeView): { href: string; label: string } | undefined {
   if (!j) return undefined;
   if (j.startsWith("@")) return { href: `https://t.me/${j.slice(1)}`, label: "Text Jarvis" };
   return { href: `sms:${j.replace(/[^+\d]/g, "")}`, label: "Text Jarvis" };
+}
+
+/** "+16282649335" -> "+1 (628) 264-9335"; other numbers stay as given. */
+const prettyNumber = (n: string) => (/^\+1\d{10}$/.test(n) ? `+1 (${n.slice(2, 5)}) ${n.slice(5, 8)}-${n.slice(8)}` : n);
+const smsLink = (n: string) => `sms:${n.replace(/[^+\d]/g, "")}`;
+
+// ---- the front door ---------------------------------------------------------------------------------------------
+
+/** Signed out: who Jarvis is, how to reach it, and the way in. */
+function doorView(info: InfoView | undefined): HTMLElement {
+  const text = info?.text ?? (info?.jarvis && !info.jarvis.startsWith("@") ? info.jarvis : undefined);
+  const bot = !text && info?.jarvis?.startsWith("@") ? info.jarvis : undefined;
+  const reach = text
+    ? el("p", { class: "num" }, "Text Jarvis at", el("b", {}, prettyNumber(text)))
+    : bot
+      ? el("p", { class: "num" }, "Find Jarvis on Telegram", el("b", {}, bot))
+      : undefined;
+  const acts = el(
+    "div",
+    { class: "acts" },
+    text ? el("a", { class: "btn text", href: smsLink(text) }, el("span", { class: "ap" }, icon("bubble")), "Text Jarvis") : undefined,
+    bot ? el("a", { class: "btn text", href: `https://t.me/${bot.slice(1)}` }, el("span", { class: "ap" }, icon("bubble")), "Text Jarvis") : undefined,
+    el("button", { class: "btn quiet tall", onclick: showLogin }, icon("ledger"), "Log in with Ledger"),
+  );
+  return el(
+    "section",
+    { class: "door" },
+    el("img", { src: "/jarvis.png", alt: "" }),
+    el("h1", {}, "Jarvis"),
+    el("p", { class: "tag" }, "Your everything agent."),
+    reach,
+    acts,
+    el("p", { class: "fine" }, "Text it what you want done. Money, and anything your policy sends there, is clear-signed on your Ledger before it happens. Log in with the same Ledger to see your account."),
+  );
+}
+
+function showLogin(): void {
+  $("title").replaceChildren(icon("ledger"), el("span", {}, "Sign in"));
+  $("view").replaceChildren(loginView());
+  void knownLedger().then((known) => known && ($("log").textContent = "This browser already knows your Ledger; no device picker needed."));
 }
 
 // ---- sign in --------------------------------------------------------------------------------------------------
@@ -527,22 +567,22 @@ function railView(m: MeView): HTMLElement[] {
 
 // ---- boot ----------------------------------------------------------------------------------------------------------
 
-function signedOut(): void {
+function signedOut(info: InfoView | undefined): void {
   me = undefined;
   $("nav").replaceChildren();
   $("sideBottom").replaceChildren();
-  $("acts").replaceChildren();
-  $("title").replaceChildren(icon("ledger"), el("span", {}, "Sign in"));
+  $("acts").replaceChildren(el("button", { class: "btn quiet tall", onclick: showLogin }, icon("ledger"), "Log in"));
+  $("title").replaceChildren(icon("home"), el("span", {}, "Jarvis"));
   $("rail").hidden = true;
   (document.querySelector(".search") as HTMLElement).hidden = true;
-  $("view").replaceChildren(loginView());
+  $("view").replaceChildren(doorView(info));
 }
 
 async function boot(): Promise<void> {
   const r = await api<MeView>("/me");
   if (r.status === 401 || !r.tag) {
-    signedOut();
-    if (hid() && (await knownLedger())) $("log").textContent = "This browser already knows your Ledger; no device picker needed.";
+    const info = await api<InfoView>("/info").catch(() => undefined);
+    signedOut(info?.ok ? info : undefined);
     return;
   }
   me = r;

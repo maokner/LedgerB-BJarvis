@@ -286,14 +286,16 @@ export function createAccountApi(deps: AccountApiDeps): { routes: Routes } {
   const routes: Routes = async (req, res, path) => {
     if (!path.startsWith("/api/")) return false;
     const route = path.replace(/\/+$/, "");
-    const known = ["/api/login/challenge", "/api/login", "/api/logout", "/api/me", "/api/google/connect", "/api/google/disconnect", "/api/phone/link", "/api/phone/unlink", "/api/policy", "/api/delete"];
+    const known = ["/api/info", "/api/login/challenge", "/api/login", "/api/logout", "/api/me", "/api/google/connect", "/api/google/disconnect", "/api/phone/link", "/api/phone/unlink", "/api/policy", "/api/delete"];
     if (!known.includes(route)) return false;
     const headers: Record<string, string> = {};
     const json = (status: number, body: unknown) => void res.writeHead(status, { ...SECURITY_HEADERS, "content-type": "application/json; charset=utf-8", ...headers }).end(JSON.stringify(body));
     const fail = (status: number, error: string) => (json(status, { ok: false, error }), true);
 
-    // GET /api/me only reads; everything else is a POST with the CSRF checks.
-    if (route === "/api/me" ? req.method !== "GET" : req.method !== "POST") return fail(405, "Not allowed.");
+    // GET /api/info and /api/me only read; everything else is a POST with the CSRF checks.
+    if (route === "/api/info" || route === "/api/me" ? req.method !== "GET" : req.method !== "POST") return fail(405, "Not allowed.");
+    // The front door, before anyone signs in: how to reach Jarvis.
+    if (route === "/api/info") return json(200, { ok: true, kind: deps.channel.kind, ...(deps.channel.jarvis ? { jarvis: deps.channel.jarvis } : {}), ...(deps.channel.text ? { text: deps.channel.text } : {}) }), true;
     let body: unknown;
     if (req.method === "POST") {
       if (!/^application\/json\b/i.test(req.headers["content-type"] ?? "")) return fail(415, "Send JSON.");

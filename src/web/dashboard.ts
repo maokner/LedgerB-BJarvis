@@ -149,6 +149,15 @@ h2.sec .more{margin-left:auto;font-size:14px;font-weight:400;color:var(--ink-2);
 @media (max-width:1240px){:root{--rail-w:300px}main{padding:30px 28px 56px}}
 @media (max-width:1040px){.cols{grid-template-columns:1fr}.rail{border-left:0;border-top:1px solid var(--line)}}
 @media (max-width:820px){.app{grid-template-columns:1fr}.side{position:static;height:auto;padding:12px 14px}.side-bottom{display:none}nav{display:flex;gap:4px;overflow:auto}nav .navhead{display:none}.navitem{height:38px;white-space:nowrap;font-size:14px}.search{display:none}.side-top{padding-bottom:10px}.top{height:64px;padding:0 16px}.top h1{font-size:16px}.btn.text,.btn.soft,.btn.quiet.tall{height:40px;border-radius:12px;font-size:14px;padding:0 14px}main{padding:22px 16px 48px}.hey{font-size:26px}.rail{padding:24px 16px 32px}.soon{grid-template-columns:1fr}.svc,.step{flex-wrap:wrap}.svc .act,.step .act{width:100%;justify-content:flex-end}.rows2 .r{flex-wrap:wrap}}
+/* front door */
+.door{max-width:560px;margin:8vh auto 0;text-align:center}
+.door img{height:120px;width:auto}
+.door h1{margin-top:18px;font-size:40px;font-weight:600;letter-spacing:-.03em;line-height:1.05}
+.door .tag{margin-top:8px;font-size:20px;color:var(--ink-2);letter-spacing:-.01em}
+.door .num{margin-top:28px;font-size:15px;color:var(--ink-2)}
+.door .num b{display:block;margin-top:4px;font-size:26px;font-weight:500;letter-spacing:-.01em;color:var(--ink);font-variant-numeric:tabular-nums}
+.door .acts{display:flex;justify-content:center;gap:12px;margin-top:26px;flex-wrap:wrap}
+.door .fine{margin-top:34px;font-size:13.5px;line-height:1.55;color:var(--ink-3);max-width:40em;margin-left:auto;margin-right:auto}
 /* sign in */
 .login{max-width:440px;margin:6vh auto 0;padding:32px 30px 28px}
 .login h1{margin-top:8px;font-size:26px;line-height:1.2;font-weight:500;letter-spacing:-.02em}

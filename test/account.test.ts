@@ -89,6 +89,13 @@ async function setup(extra: Partial<AccountApiDeps> = {}) {
 }
 
 describe("signing in with the Ledger", () => {
+  it("tells anyone how to reach Jarvis, before signing in", async () => {
+    const { get } = await setup({ channel: { kind: "iMessage", jarvis: "+14155550199", text: "+16282649335" } });
+    const info = await get("/api/info");
+    expect([info.status, info.body]).toEqual([200, { ok: true, kind: "iMessage", jarvis: "+14155550199", text: "+16282649335" }]);
+    expect(info.headers.get("cache-control")).toBe("no-store");
+  });
+
   it("challenge, then a signed login sets an HttpOnly session cookie and returns the tag", async () => {
     const s = await setup();
     const c = await s.post("/api/login/challenge");
