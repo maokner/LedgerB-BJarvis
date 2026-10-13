@@ -9,7 +9,7 @@
  * and Cloudflare see the same kind of device on both sides. Run it again whenever the server logs that DoorDash signed
  * it out. The account should hold a saved card and an empty cart: the server checks out whatever card is the default.
  */
-import { chmod, mkdir } from "node:fs/promises";
+import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { chromium } from "playwright";
@@ -40,7 +40,10 @@ try {
     await page.goto(SIGN_IN, { waitUntil: "domcontentloaded" });
   }
   await mkdir(dirname(file), { recursive: true });
-  await context.storageState({ path: file });
+  // Cookies alone carry the sign-in. Local storage is left out: it runs to hundreds of KB on these sites, and the
+  // session travels to the server as one environment variable (a Fly secret), which a machine cannot start with.
+  const state = await context.storageState();
+  await writeFile(file, JSON.stringify({ cookies: state.cookies, origins: [] }));
   await chmod(file, 0o600);
 } finally {
   rl.close();

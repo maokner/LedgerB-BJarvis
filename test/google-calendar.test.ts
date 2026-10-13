@@ -18,7 +18,10 @@ interface GoogleEventRow {
   end: { dateTime?: string; date?: string };
   status?: string;
   transparency?: string;
-  attendees?: { self?: boolean; responseStatus?: string }[];
+  location?: string;
+  htmlLink?: string;
+  organizer?: { email?: string; displayName?: string; self?: boolean };
+  attendees?: { email?: string; displayName?: string; self?: boolean; responseStatus?: string }[];
 }
 
 /** Google's token endpoint and Calendar API, in memory. */
