@@ -3,7 +3,19 @@
 Jarvis is a personal agent.
 You send it a text message on iMessage, or you call it on the phone.
 Jarvis can send money, buy items, order food and manage your calendar.
-Your Ledger must sign each action that moves money before the action occurs.
+Your Ledger must sign each action before the action occurs.
+
+## The problem
+
+An agent that holds your key can be tricked.
+A prompt injection or a wrong address can empty the account.
+A spending limit in software does not help, because the same software can be tricked.
+
+Jarvis has no key.
+Jarvis has one tool only: `propose_action`.
+This tool makes a proposal and waits for your signature.
+The proposal shows on your Ledger with the exact amount, the recipient and the purpose.
+Nothing occurs until you approve the proposal on the device.
 
 ## What Jarvis can do
 
@@ -33,23 +45,15 @@ They can find a meeting time and pass notes.
 
 ## How the Ledger protects you
 
-Jarvis has no tool that can move money, write to a calendar or add a friend.
-Jarvis has one tool only: `propose_action`.
-This tool makes a proposal and waits for your signature.
-
-The server shows the proposal on your Ledger with the exact details.
-You see how much, to whom, and for what.
-Nothing occurs until you approve the proposal on the device.
-If you reject the proposal, the server cancels it.
-
 The Ledger shows each action in the Ethereum app:
 
 - A payment is a transfer on Base. The device shows the amount, the address and the fees.
-- An Amazon purchase or a food order is a USDC transfer to the treasury. The device shows "4.35 USDC" and the address, not a blind-signing request.
+- An Amazon purchase or a food order is a USDC transfer to the treasury. The device shows "4.35 USDC" and the address.
 - A calendar event, a friend request or an account change is a short message. The device shows the full message.
 
 The server compares the signature with the address of your account.
 Each action has a random id, so one signature is valid for one action only.
+If you reject the proposal, the server cancels it.
 
 The Ledger does not have to connect to the server.
 Each approval text has a link to a web page.
@@ -70,17 +74,15 @@ The limit is $40 for each order.
 
 ## Calls
 
-You can call Jarvis on a Twilio number.
-OpenAI's realtime model speaks as Jarvis, with the same tools a text has.
-Jarvis recognizes you by your caller ID.
-On iMessage, your phone number is your account, so a call from it is known at once.
+You can call Jarvis on the phone.
+Jarvis speaks with the same tools a text message has.
+Jarvis knows you by your caller ID.
 Each Ledger action goes to your chat as usual.
 Jarvis tells you on the call when you approve it.
-See `voice/TWILIO.md`.
 
 ## The account page
 
-Each owner has a page at `PUBLIC_URL/`.
+Each owner has a web page.
 You sign in with your Ledger.
 There is no password and no email.
 The Ethereum app signs a short message.
@@ -99,54 +101,15 @@ The page has these sections:
 The agent is Grok, in two layers.
 A persona speaks with you.
 An engine does the work and makes the proposals.
+The engine cannot move money, write to a calendar or add a friend.
+It can only propose.
 
-## Codebase
+## Technology
 
-```
-src/types.ts, actions.ts     the Action contract and its canonical bytes
-src/approvals.ts             propose -> Ledger -> verify -> execute -> send the result
-src/executors.ts             what each action does after the signature
-src/device/                  the Ledger: Ethereum app over USB, signature verification
-src/web/                     the approval page and the account page (WebHID in the browser), one theme
-src/agent/                   persona, engine, tools, the xAI client
-src/channels/                iMessage on Photon, Telegram, and a local dev channel for tests
-src/voice/, src/phone.ts     phone calls: Twilio audio into OpenAI's realtime model, linked phone numbers
-src/money.ts, chain.ts       ETH and USDC on Base
-src/purchases.ts, merchant.ts, amazon/, treasury.ts   purchases on Amazon
-src/food/                    food orders on DoorDash
-src/calendar/, meetings.ts   calendars and meetings between friends
-src/policy.ts                which actions need the Ledger, for each owner
-src/db.ts                    SQLite
-device-app/                  a custom Nano S Plus app for the offline demo mode
-```
+- Ledger Nano S Plus with the Ethereum app, clear signing for transactions and messages.
+- Base mainnet for USDC and ETH.
+- iMessage through Photon, phone calls through Twilio and OpenAI's realtime model.
+- Grok from xAI as the agent.
+- Google Calendar, Amazon and DoorDash as connected services.
 
 `DESIGN.md` has the full design.
-It describes the action encoding, the device protocol, the purchase states and the agent harness.
-
-## Run it
-
-```sh
-pnpm install
-cp .env.example .env     # XAI_API_KEY, SPECTRUM_PROJECT_ID, SPECTRUM_PROJECT_SECRET, PHOTON_NUMBER, PUBLIC_URL (https)
-                         # calls: OPENAI_API_KEY, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER (voice/TWILIO.md)
-pnpm start               # iMessage on Photon (CHANNEL=telegram for Telegram)
-pnpm dev                 # local dev channel, no phone
-pnpm test
-```
-
-Jarvis uses a shared iMessage number from Photon.
-The Photon project id and secret are in the Photon dashboard, in the project settings.
-`PHOTON_NUMBER` is the number that people send messages to.
-Jarvis can send a message to a person only after that person sends a message to Jarvis.
-Jarvis can also run as a Telegram bot.
-
-## Deploy
-
-To deploy to Fly.io, run `scripts/fly-deploy.sh`.
-To point the Twilio number at the server, run `scripts/twilio-setup.sh`.
-
-The account page is also a static site on Vercel.
-`pnpm build:web` writes it to `dist/site`.
-`vercel.json` sends `/api`, `/sign` and `/google` to the Fly server.
-Put the Vercel origin in `DASHBOARD_ORIGINS` on the server, so the page's requests pass the origin check.
-To deploy the page, run `vercel deploy --prod` in this directory.
