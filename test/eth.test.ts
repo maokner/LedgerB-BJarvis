@@ -1,6 +1,7 @@
 import { getAddress, parseEther, Transaction, Wallet } from "ethers";
 import { describe, expect, it } from "vitest";
 import { actionMessage, newActionId } from "../src/actions.js";
+import { erc20TransferData, USDC } from "../src/chain.js";
 import { greeting } from "../src/app.js";
 import { signOnEthApp, verifyEthSignature } from "../src/device/eth.js";
 import { baseMoney, formatEth, usdToWei } from "../src/money.js";
@@ -99,6 +100,34 @@ describe("Ethereum mode end to end (fake Ledgers, stubbed Base)", () => {
     expect(h.to(PHONES.yadu)).toContain(`@matt sent you 0.00125 ETH ($5.00) on Base. ${link}`);
     const row = h.db.sentPayments(h.db.accountByTag("@matt")!.id)[0]!;
     expect([row.status, row.tx_hash]).toEqual(["executed", tx.hash]);
+  });
+
+  it("pays dollars in USDC when the owner holds it: a clear-signed token transfer, ETH only for the fee", async () => {
+    const { chain, sent } = stubChain({ [addr(matt)]: parseEther("0.0004"), [addr(yadu)]: 0n }, 4000, { [addr(matt)]: 8_000_000n });
+    const devices = fakeEthDevices([matt, yadu]);
+    const h = harness(0, undefined, { money: baseMoney(chain), deviceManager: devices.manager });
+    devices.plugged.delete(1);
+    await h.send(PHONES.matt, "@matt");
+    devices.plugged.add(1);
+    await h.send(PHONES.yadu, "@yadu");
+    h.script(delegate("send $5 to yadu"), call("propose_action", { code: "PAY", fields: { To: "yadu", Amount: "$5", Memo: "lunch" } }), say("Set up $5.00 to @yadu."));
+    await h.send(PHONES.matt, "send $5 to yadu");
+    expect(sent).toHaveLength(1);
+    const tx = Transaction.from(sent[0]!);
+    // The token contract is the recipient; the transfer's data names Yadu and 5 USDC in units.
+    expect([tx.from, tx.to, tx.value]).toEqual([matt.address, USDC.address, 0n]);
+    expect(tx.data).toBe(erc20TransferData(yadu.address, 5_000_000n));
+    const link = `https://basescan.org/tx/${tx.hash}`;
+    expect(h.to(PHONES.matt)).toEqual(
+      expect.arrayContaining([
+        `Set up $5.00 to @yadu.\n\nPlease confirm on your Ledger: Send 5 USDC ($5.00) to @yadu ${yadu.address}`,
+        `Sent 5 USDC ($5.00) for lunch to @yadu on Base. ${link}`,
+        `Confirmed on Base: 5 USDC to @yadu. ${link}`,
+      ]),
+    );
+    expect(h.to(PHONES.yadu)).toContain(`@matt sent you 5 USDC ($5.00) for lunch on Base. ${link}`);
+    const action = h.db.sentPayments(h.db.accountByTag("@matt")!.id)[0]!;
+    expect(action.fields).toEqual([{ label: "To", value: "@yadu" }, { label: "Amount", value: "$5.00" }, { label: "USDC", value: "5" }, { label: "Address", value: yadu.address }, { label: "Memo", value: "lunch" }]);
   });
 
   it("sends ETH amounts to a raw address (even your own), and refuses what the balance cannot cover", async () => {

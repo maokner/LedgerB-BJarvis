@@ -12,7 +12,8 @@
  */
 import { randomBytes } from "node:crypto";
 import { toFieldText } from "../actions.js";
-import type { Account, Db } from "../db.js";
+import { cleanAddress, noAddress, saveAddress, savedAddress, shortAddress } from "../address.js";
+import type { Account } from "../db.js";
 import { formatCents } from "../format.js";
 import { type Merchant, MerchantError, type Quote } from "../merchant.js";
 import { createPurchases, type Purchases, type PurchasesOptions, type PurchaseWording } from "../purchases.js";
@@ -22,7 +23,7 @@ export const DEFAULT_FOOD_LIMIT_CENTS = 4_000;
 const DRAFT_TTL_MS = 20 * 60_000;
 const MAX_TIP_PERCENT = 40;
 const DRAFT_ID = /^q[0-9a-f]{6}$/;
-const NO_ADDRESS = "Error: there is no delivery address. Ask the owner where to deliver; when they give their own address, save it with set_delivery_address.";
+const NO_ADDRESS = noAddress("deliver");
 
 export interface FoodOptions extends Omit<PurchasesOptions, "merchant" | "wording" | "shipsTo"> {
   provider: FoodProvider;
@@ -40,7 +41,7 @@ export type Food = Omit<Purchases, "search"> & {
   menu(storeId: string): Promise<string>;
   /** Prices an order and keeps it as a draft for EAT, as JSON with its quote_id, or an "Error: ..." line. */
   quote(owner: Account, request: { storeId: string; items: OrderLine[]; tipPercent?: number; address?: string }): Promise<string>;
-  /** Saves the owner's own delivery address; the line for the model. */
+  /** Saves the owner's own delivery address (the one Amazon uses too); the line for the model. */
   setAddress(owner: Account, address: string): string;
 };
 
@@ -48,13 +49,6 @@ interface Draft {
   accountId: number;
   order: FoodOrder;
   expiresAt: number;
-}
-
-/** An address as the Ledger's Deliver field: the street and the city, cut to one line. */
-export function shortAddress(address: string): string {
-  const parts = address.split(",").map((p) => p.trim()).filter(Boolean);
-  const two = parts.slice(0, 2).join(", ");
-  return toFieldText(two.length <= 48 ? two : (parts[0] ?? address));
 }
 
 const eta = (minutes: number | undefined) => (minutes ? `about ${minutes} minutes` : undefined);
@@ -101,8 +95,7 @@ export function foodWording(store: string): PurchaseWording {
     },
     fact: (owner, t) =>
       `${store}: ${owner.tag} can order food delivered through you, up to ${t.limit} per order all in (food, fees, tax and tip), paid in USDC on Base from their address (plus a little ETH for the fee) to the treasury ${t.treasury}.` +
-      `${t.refunds ? " The USDC comes back if the order does not go through." : ""} ` +
-      (owner.delivery_address ? `Delivery address: ${owner.delivery_address}.` : "Delivery address: none saved yet; ask for it before searching."),
+      ` It goes to the delivery address in these facts unless they name another one for that order.${t.refunds ? " The USDC comes back if the order does not go through." : ""}`,
   };
 }
 
@@ -148,7 +141,7 @@ export function createFood(o: FoodOptions): Food {
   const log = o.log ?? (() => {});
   const drafts = new Map<string, Draft>();
   const { search: _search, ...purchases } = createPurchases({ ...o, limitCents, merchant: foodMerchant(provider, drafts, limitCents), wording: foodWording(provider.name) });
-  const addressOf = (owner: Account, given?: string) => given?.replace(/\s+/g, " ").trim() || freshAccount(db, owner).delivery_address || undefined;
+  const addressOf = (owner: Account, given?: string) => cleanAddress(given) || savedAddress(db, owner);
   const failed = (err: unknown, doing: string) => {
     if (err instanceof MerchantError) return `Error: ${err.message}`;
     log(`food: ${doing} failed: ${(err as Error).stack ?? err}`);
@@ -249,17 +242,6 @@ export function createFood(o: FoodOptions): Food {
       });
     },
 
-    setAddress(owner, address) {
-      const clean = address.replace(/\s+/g, " ").trim();
-      if (clean.length < 6 || clean.length > 200 || !/\d/.test(clean) || !/[a-z]/i.test(clean)) {
-        return "Error: that does not look like a street address. Ask for the full one: number, street, city (and apartment, if any).";
-      }
-      db.setDeliveryAddress(owner.id, clean);
-      log(`food: delivery address for ${owner.tag} saved`);
-      return `Saved ${owner.tag}'s delivery address: ${clean}.`;
-    },
+    setAddress: (owner, address) => saveAddress(db, owner, address, (line) => log(`food: ${line}`)),
   };
 }
-
-/** The owner's row as stored now (the tools get the account as it was at the start of the turn). */
-const freshAccount = (db: Db, owner: Account): Account => db.account(owner.id) ?? owner;

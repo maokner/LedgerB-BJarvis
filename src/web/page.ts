@@ -69,8 +69,8 @@ export function page(v: PageView): string {
     .map((f) => `<div${isAddress(f.value) ? ' class="addr"' : ""}><dt>${esc(f.label)}</dt><dd>${esc(f.value)}</dd></div>`)
     .join("");
   const top = amount ? `<div class="amount"><b>${esc(amount.value)}</b>${eth ? `<span>${esc(eth.value)} ${esc(eth.label)} on Base</span>` : ""}</div>` : "";
-  return `<!doctype html><html lang="en"><head>${head(`${title} - AgentSign`, CSS, `
-<meta property="og:title" content="${esc(`${title} - approve on your Ledger`)}"><meta property="og:site_name" content="AgentSign">`)}</head><body><main>
+  return `<!doctype html><html lang="en"><head>${head(`${title} - Jarvis`, CSS, `
+<meta property="og:title" content="${esc(`${title} - approve on your Ledger`)}"><meta property="og:site_name" content="Jarvis">`)}</head><body><main>
 <header>${BRAND}<span class="eyebrow">Approval</span></header>
 <div class="top"><p class="eyebrow ${esc(TONE[v.status] ?? "")}" id="eyebrow">${esc(eyebrow[v.status] ?? "")}</p>
 <h1>${esc(title)}</h1>
@@ -95,7 +95,7 @@ export function page(v: PageView): string {
 export function messagePage(o: { eyebrow: string; title: string; detail: string; tone?: "ok" | "bad"; action?: { label: string; href: string } }): string {
   const t = o.tone === "ok" ? " good" : o.tone === "bad" ? " bad" : "";
   const action = o.action ? `<p class="action"><a class="btn" href="${esc(o.action.href)}">${esc(o.action.label)}</a></p>` : "";
-  return `<!doctype html><html lang="en"><head>${head(`${o.title} - AgentSign`, CSS)}</head><body><main>
+  return `<!doctype html><html lang="en"><head>${head(`${o.title} - Jarvis`, CSS)}</head><body><main>
 <header>${BRAND}</header>
 <div class="top"><p class="eyebrow${t}">${esc(o.eyebrow)}</p>
 <h1>${esc(o.title)}</h1><p class="detail">${o.detail}</p>${action}</div>

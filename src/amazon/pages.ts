@@ -8,6 +8,7 @@
  * data/amazon-shots shows what the page looked like.
  */
 import type { Frame, Locator, Page } from "playwright";
+import { mentionsAddress, streetLine } from "../address.js";
 import type { Product } from "../merchant.js";
 
 export const AMAZON = "https://www.amazon.com";
@@ -103,6 +104,27 @@ export function newestOrderFor(historyText: string, title: string): string | und
   return titleShown(historyText.slice(first.index, next?.index), title) ? first[0] : undefined;
 }
 
+/**
+ * Where checkout text says the order goes: the "Delivering to", "Deliver to", "Ship to" or "Shipping to" label at the
+ * start of a line and up to three lines after it (the name, the street, the city), joined with commas. Null when the
+ * page names no address.
+ */
+export function findShipTo(text: string): string | null {
+  const m = /(?:^|\n)[ \t]*(?:Deliver(?:ing)?|Ship(?:ping)?) to(?![ \t]+this address)[:\s]+([^\n]+(?:\n[^\n]+){0,2})/i.exec(text);
+  if (!m) return null;
+  // Buttons and links that sit inside the address block are not part of it.
+  const lines = m[1]!.split("\n").map((l) => l.replace(/\s+/g, " ").trim()).filter((l) => l && !/^(change|edit|update|add delivery instructions)\b/i.test(l));
+  const address = lines.join(", ").slice(0, 200);
+  return address || null;
+}
+
+/**
+ * Whether the checkout's ship-to text is the owner's address: the owner's street line appears in it, as whole words
+ * ("1 Market Street Apt 5" in "Matt Okner, 1 MARKET ST, UNIT 5, SAN FRANCISCO, CA"; "1 Market St" not in "21 MARKET ST").
+ */
+export const shipsHere = (checkoutShipTo: string, address: string): boolean => mentionsAddress(checkoutShipTo, address);
+export { streetLine };
+
 export const isCheckoutUrl = (url: string): boolean => /\/checkout\/|\/gp\/buy\//i.test(url) && !isThankYouUrl(url);
 export const isThankYouUrl = (url: string): boolean => /thankyou/i.test(url);
 
@@ -193,6 +215,19 @@ export interface CheckoutRead {
   /** Units on the page: from "Checkout (n items)" style text, else the distinct product ids linked. */
   itemCount: number | null;
   asins: string[];
+  /** Where the checkout says it ships (its address block, as text), or null when the page shows none. */
+  shipTo: string | null;
+}
+
+/** Containers Amazon's checkout layouts put the ship-to address in. */
+const SHIP_TO_SELECTORS = ["#shipaddress", ".ship-to-this-address", "#deliver-to-address-text", "#checkout-delivery-address", ".displayAddressDiv", "[data-testid*='address']"];
+
+/** The checkout's address block: the known containers first, then the "Delivering to" text. One page call, no waiting. */
+async function readShipTo(target: Page | Frame, text: string): Promise<string | null> {
+  const blocks = await target.$$eval(SHIP_TO_SELECTORS.join(", "), (els) => els.map((e) => (e as HTMLElement).innerText ?? "")).catch(() => [] as string[]);
+  // A container with no digit is a heading or a "Change" link, not an address.
+  const block = blocks.map((b) => b.replace(/\s+/g, " ").trim()).find((b) => /\d/.test(b));
+  return block ? block.slice(0, 200) : findShipTo(text);
 }
 
 /** Reads the order summary of a checkout page or the Buy Now side sheet. */
@@ -216,5 +251,5 @@ export async function readCheckout(target: Page | Frame): Promise<CheckoutRead> 
     )
     .catch(() => [] as string[]);
   const distinct = [...new Set(asins)];
-  return { text, totalCents, itemsCents: findItemsSubtotal(text), itemCount: findItemCount(text) ?? (distinct.length || null), asins: distinct };
+  return { text, totalCents, itemsCents: findItemsSubtotal(text), itemCount: findItemCount(text) ?? (distinct.length || null), asins: distinct, shipTo: await readShipTo(target, text) };
 }

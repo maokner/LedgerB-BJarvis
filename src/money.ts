@@ -116,6 +116,38 @@ export function baseMoney(chain: Chain): Money {
     };
     return { wei, eth: formatEth(wei, 18), meta };
   };
+  /** A transfer of `cents` in USDC with Ledger's token descriptor, or an "Error: ..." line (not enough USDC, or ETH for the fee). */
+  async function transferUsdc(owner: Account, address: string, cents: number): Promise<{ units: bigint; usdc: string; meta: EthTxMeta } | string> {
+    const units = centsToUsdc(cents);
+    if (units <= 0n) return "Error: that amount is too small to send.";
+    const have = await chain.tokenBalance(USDC.address, owner.pubkey);
+    if (have < units) {
+      return `Error: not enough USDC on Base. The balance is ${formatUsdc(have)} USDC at ${getAddress(owner.pubkey)}; this needs ${formatUsdc(units)} USDC. Tell the owner to send USDC on Base to their address; do not propose it.`;
+    }
+    // The ETH leg of plan() is the gas check: a token transfer carries no ETH but still needs some for the fee.
+    const data = erc20TransferData(getAddress(address), units);
+    const p = await chain.prepareTransfer(owner.pubkey, USDC.address, 0n, data);
+    const ethHave = await chain.balanceWei(owner.pubkey);
+    const fee = p.gasLimit * p.maxFeePerGas;
+    if (fee > ethHave) return `Error: not enough ETH on Base for the network fee (${formatEth(fee, 8)} ETH); the balance is ${await balance(owner.pubkey)}. Tell the owner; do not propose it.`;
+    const meta: EthTxMeta = {
+      to: USDC.address,
+      valueWei: "0",
+      data,
+      chainId: p.chainId,
+      nonce: p.nonce,
+      gasLimit: p.gasLimit.toString(),
+      maxFeePerGas: p.maxFeePerGas.toString(),
+      maxPriorityFeePerGas: p.maxPriorityFeePerGas.toString(),
+    };
+    let erc20Tokens: string[];
+    try {
+      erc20Tokens = await chain.erc20Resolution(unsignedTx(meta).unsignedSerialized);
+    } catch (err) {
+      return `Error: could not fetch Ledger's USDC descriptor for Base (${(err as Error).message}), so the Ledger could not show this clearly. Tell the owner to try again in a moment; do not propose it.`;
+    }
+    return { units, usdc: formatUsdc(units), meta: { ...meta, resolution: { erc20Tokens } } };
+  }
   return {
     mode: "eth",
     appName: "the Ethereum app",
@@ -127,6 +159,7 @@ export function baseMoney(chain: Chain): Money {
     },
     async pay(owner, to, amount, memo) {
       const address = getAddress(typeof to === "string" ? to : to.pubkey);
+      const toTag = typeof to === "string" ? undefined : to.tag;
       const usdPerEth = await chain.ethUsdPrice();
       const ethMatch = /^\s*(\d+(?:\.\d+)?)\s*eth\s*$/i.exec(amount);
       let wei: bigint;
@@ -138,12 +171,26 @@ export function baseMoney(chain: Chain): Money {
         const parsed = parseCents(amount);
         if (!parsed) return "Error: Amount must be dollars like $5.00 or ETH like 0.001 ETH.";
         cents = parsed;
+        // Dollars go as USDC when the owner holds enough of it (ETH then only pays the small fee); otherwise as ETH.
+        const usdc = await usdcBalance(owner.pubkey);
+        if (usdc !== undefined && usdc >= centsToUsdc(cents)) {
+          const planned = await transferUsdc(owner, address, cents);
+          if (typeof planned === "string") return planned;
+          const fields: ActionField[] = [
+            { label: "To", value: toTag ?? address },
+            { label: "Amount", value: formatCents(cents) },
+            { label: "USDC", value: planned.usdc },
+            ...(toTag ? [{ label: "Address", value: address }] : []),
+            ...(memo ? [{ label: "Memo", value: toFieldText(memo) }] : []),
+          ];
+          const action: Action = { code: "PAY", id: newActionId(), fields, meta: planned.meta };
+          return { action, prompt: `Please confirm on your Ledger: Send ${planned.usdc} USDC (${formatCents(cents)}) to ${toTag ? `${toTag} ` : ""}${address}` };
+        }
         wei = usdToWei(cents, usdPerEth);
       }
       const planned = await plan(owner, address, wei);
       if (typeof planned === "string") return planned;
       const { eth, meta } = planned;
-      const toTag = typeof to === "string" ? undefined : to.tag;
       const fields: ActionField[] = [
         { label: "To", value: toTag ?? address },
         { label: "Amount", value: formatCents(cents) },
@@ -159,37 +206,7 @@ export function baseMoney(chain: Chain): Money {
       if (wei <= 0n) return "Error: that amount is too small to send.";
       return plan(owner, getAddress(address), wei);
     },
-    async transferUsdc(owner, address, cents) {
-      const units = centsToUsdc(cents);
-      if (units <= 0n) return "Error: that amount is too small to send.";
-      const have = await chain.tokenBalance(USDC.address, owner.pubkey);
-      if (have < units) {
-        return `Error: not enough USDC on Base. The balance is ${formatUsdc(have)} USDC at ${getAddress(owner.pubkey)}; this needs ${formatUsdc(units)} USDC. Tell the owner to send USDC on Base to their address; do not propose it.`;
-      }
-      // The ETH leg of plan() is the gas check: a token transfer carries no ETH but still needs some for the fee.
-      const data = erc20TransferData(getAddress(address), units);
-      const p = await chain.prepareTransfer(owner.pubkey, USDC.address, 0n, data);
-      const ethHave = await chain.balanceWei(owner.pubkey);
-      const fee = p.gasLimit * p.maxFeePerGas;
-      if (fee > ethHave) return `Error: not enough ETH on Base for the network fee (${formatEth(fee, 8)} ETH); the balance is ${await balance(owner.pubkey)}. Tell the owner; do not propose it.`;
-      const meta: EthTxMeta = {
-        to: USDC.address,
-        valueWei: "0",
-        data,
-        chainId: p.chainId,
-        nonce: p.nonce,
-        gasLimit: p.gasLimit.toString(),
-        maxFeePerGas: p.maxFeePerGas.toString(),
-        maxPriorityFeePerGas: p.maxPriorityFeePerGas.toString(),
-      };
-      let erc20Tokens: string[];
-      try {
-        erc20Tokens = await chain.erc20Resolution(unsignedTx(meta).unsignedSerialized);
-      } catch (err) {
-        return `Error: could not fetch Ledger's USDC descriptor for Base (${(err as Error).message}), so the Ledger could not show this clearly. Tell the owner to try again in a moment; do not propose it.`;
-      }
-      return { units, usdc: formatUsdc(units), meta: { ...meta, resolution: { erc20Tokens } } };
-    },
+    transferUsdc,
     verify: verifyEthSignature,
     async accountCreatedText(tag, address) {
       const shown = getAddress(address);

@@ -6,6 +6,9 @@
  * things and must never be checked out. One checkout runs at a time, and the order total is checked against the hard
  * limit here, on the page, not only by the caller.
  *
+ * Orders ship where the account's checkout says: when the checkout shows an address that is not the owner's delivery
+ * address, the driver stops (WrongAddress) at prepare and again at confirm. It never edits the account's addresses.
+ *
  * Once "Place your order" is pressed the outcome is "ordered" (with Amazon's order number) or "uncertain", never
  * "no_purchase", and the button is never pressed twice.
  */
@@ -13,10 +16,10 @@ import { randomBytes } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { chromium, errors, type Browser, type BrowserContext, type BrowserContextOptions, type Frame, type Page } from "playwright";
-import { MerchantError, type Merchant, type Outcome, type Quote } from "../merchant.js";
+import { MerchantError, type Merchant, type Outcome, type Quote, WrongAddress } from "../merchant.js";
 import {
   AMAZON, bodyText, desktopUserAgent, detectBlock, findOrderId, firstVisible, isAsin, isCheckoutUrl, isThankYouUrl, newestOrderFor, productUrl,
-  readCheckout, readProductPrice, readSearchResults, signedInName, titleShown, toProducts, usd, type CheckoutRead,
+  readCheckout, readProductPrice, readSearchResults, shipsHere, signedInName, titleShown, toProducts, usd, type CheckoutRead,
 } from "./pages.js";
 
 export interface AmazonOptions {
@@ -202,8 +205,11 @@ export function createAmazonMerchant(o: AmazonOptions): AmazonMerchant {
       target.getByRole("button", { name: /place your order/i }),
     ]);
 
-  /** Opens the product, presses Buy Now and reads the checkout without ordering. Throws NotBuyable for item problems. */
-  async function openCheckout(page: Page, asin: string): Promise<{ target: Page | Frame; title: string; itemCents: number; read: CheckoutRead & { totalCents: number } }> {
+  /**
+   * Opens the product, presses Buy Now and reads the checkout without ordering. Throws NotBuyable for item problems and
+   * WrongAddress when the checkout ships somewhere other than `shipTo`. A checkout that shows no address is not blocked.
+   */
+  async function openCheckout(page: Page, asin: string, shipTo?: string): Promise<{ target: Page | Frame; title: string; itemCents: number; read: CheckoutRead & { totalCents: number } }> {
     await goto(page, productUrl(asin), "open the item");
     // Amazon may redirect an old id to another listing; buy only what was asked for.
     const shown = await page.locator("input#ASIN, input[name='ASIN']").first().inputValue({ timeout: 3_000 }).catch(() => null);
@@ -234,6 +240,14 @@ export function createAmazonMerchant(o: AmazonOptions): AmazonMerchant {
     if (!read.asins.includes(asin) && !titleShown(read.text, title)) throw new NotBuyable("the checkout page doesn't show this item, so I stopped");
     const totalCents = read.totalCents;
     if (totalCents === null) throw new NotBuyable("I couldn't read the order total on the checkout page");
+    if (shipTo) {
+      // The account's address is the operator's: it goes to the log, never into the owner's text.
+      if (read.shipTo === null) log(`amazon: the checkout for ${asin} shows no address, so the ship-to address was not checked`);
+      else if (!shipsHere(read.shipTo, shipTo)) {
+        log(`amazon: the checkout for ${asin} ships to "${read.shipTo}", not to the owner's address`);
+        throw new WrongAddress(shipTo);
+      }
+    }
     const itemCents = read.itemsCents ?? listedCents ?? totalCents;
     log(`amazon: checkout for ${asin}: item ${usd(itemCents)}, total ${usd(totalCents)} (${target === page ? page.url() : "side sheet"})`);
     return { target, title, itemCents, read: { ...read, totalCents } };
@@ -306,14 +320,14 @@ export function createAmazonMerchant(o: AmazonOptions): AmazonMerchant {
         }
       }),
 
-    prepare: (asin) =>
+    prepare: (asin, options) =>
       serial(async () => {
         if (!isAsin(asin)) throw new MerchantError(`${asin} is not an Amazon item id`);
         const page = await newPage();
         try {
-          const { title, itemCents, read } = await openCheckout(page, asin);
+          const { title, itemCents, read } = await openCheckout(page, asin, options?.shipTo);
           if (read.totalCents > o.limitCents) throw new MerchantError(`costs ${usd(read.totalCents)} all in, over the ${usd(o.limitCents)} limit`);
-          return { quoteId: randomBytes(8).toString("hex"), asin, title, itemCents, totalCents: read.totalCents, expiresAt: Date.now() + QUOTE_TTL_MS };
+          return { quoteId: randomBytes(8).toString("hex"), asin, title, itemCents, totalCents: read.totalCents, expiresAt: Date.now() + QUOTE_TTL_MS, ...(options?.shipTo ? { shipTo: options.shipTo } : {}) };
         } catch (err) {
           await shot(page, `prepare-${asin}`);
           throw asMerchantError(err, "price the item");
@@ -329,10 +343,10 @@ export function createAmazonMerchant(o: AmazonOptions): AmazonMerchant {
         try {
           let checkout;
           try {
-            checkout = await openCheckout(page, quote.asin);
+            checkout = await openCheckout(page, quote.asin, quote.shipTo);
           } catch (err) {
             await shot(page, `confirm-${quote.asin}`);
-            if (err instanceof NotBuyable) return { status: "no_purchase", reason: err.message };
+            if (err instanceof NotBuyable || err instanceof WrongAddress) return { status: "no_purchase", reason: err.message };
             // Signed out or a captcha: a setup problem for the operator, thrown. Anything else before the press is certain.
             if (err instanceof MerchantError) throw err;
             return { status: "no_purchase", reason: asMerchantError(err, "check out").message };

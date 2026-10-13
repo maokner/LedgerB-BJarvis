@@ -92,8 +92,8 @@ export const call = (name: string, args: Record<string, unknown>): CompleteResul
   toolCalls: [{ id: `call_${++callSeq}`, name, arguments: JSON.stringify(args) } satisfies ToolCall],
 });
 
-/** The persona hands a task to the engine. */
-export const delegate = (goal: string, context?: string): CompleteResult => call("delegate", context ? { goal, context } : { goal });
+/** The persona hands a task to the engine; `address`: the delivery address the owner confirmed for an order. */
+export const delegate = (goal: string, context?: string, address?: string): CompleteResult => call("delegate", { goal, ...(context ? { context } : {}), ...(address ? { address } : {}) });
 /** Which side of the two-layer agent a request came from. */
 export const isPersona = (request: CompleteRequest) => request.tools.some((t) => t.name === "delegate");
 export const isEngine = (request: CompleteRequest) => request.tools.some((t) => t.name === "propose_action");

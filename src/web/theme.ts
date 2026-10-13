@@ -18,10 +18,8 @@ button:disabled{cursor:default}
 .mono{font-family:var(--mono);font-feature-settings:normal}
 .eyebrow{font-family:var(--mono);font-size:11.5px;font-weight:500;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3)}
 .eyebrow.good{color:var(--ok)}.eyebrow.bad{color:var(--bad)}.eyebrow.live{color:var(--ink-2)}
-.brand{display:inline-flex;align-items:center;gap:9px;font-size:14px;font-weight:600;letter-spacing:-.01em;color:var(--ink);text-decoration:none}
-.brand i{width:18px;height:12px;border-radius:3px;background:var(--ink);position:relative;flex:none}
-.brand i:before{content:"";position:absolute;left:3px;top:3px;width:7px;height:6px;border-radius:1px;background:#fff}
-.brand i:after{content:"";position:absolute;right:3px;top:3px;width:1.5px;height:6px;background:rgba(255,255,255,.55)}
+.brand{display:inline-flex;align-items:center;gap:10px;font-size:16px;font-weight:600;letter-spacing:-.01em;color:var(--ink);text-decoration:none}
+.brand img{height:30px;width:auto;flex:none}
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:9px;height:44px;padding:0 18px;border-radius:11px;background:var(--ink);color:#fff;font-size:14.5px;font-weight:500;letter-spacing:-.005em;text-decoration:none;white-space:nowrap;transition:background .15s,opacity .15s}
 .btn:hover{background:#000}.btn:disabled{opacity:.45}
 .btn.block{width:100%;height:52px;font-size:15px}
@@ -47,6 +45,7 @@ export function head(title: string, css: string, extra = ""): string {
 <meta name="referrer" content="no-referrer">
 <meta name="color-scheme" content="light">
 <meta name="theme-color" content="#F7F7F5">
+<link rel="icon" href="/jarvis.png" type="image/png">
 <title>${esc(title)}</title>${extra}
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
@@ -57,7 +56,8 @@ ${css}</style>`;
 /** The eyebrow's colour class per action status (the approval page renders it, its script updates it). */
 export const TONE: Record<string, string> = { pending: "live", approved: "live", executed: "good", rejected: "bad", expired: "bad", failed: "bad" };
 
-export const BRAND = `<a class="brand" href="/"><i></i>AgentSign</a>`;
+/** The wordmark: the Jarvis robot (src/web/jarvis.png, served at /jarvis.png) and the name. */
+export const BRAND = `<a class="brand" href="/"><img src="/jarvis.png" alt="" width="18" height="30">Jarvis</a>`;
 
 /** Monochrome line icons, 24-unit grid, drawn with currentColor. */
 export const ICONS = {
@@ -74,4 +74,13 @@ export const ICONS = {
   base: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h11" stroke-linecap="round"/></svg>`,
   friends: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><circle cx="16.5" cy="9.5" r="2.4"/><path d="M15.5 14.8a4.5 4.5 0 0 1 5 4.2"/></svg>`,
   activity: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 12h4l2.5-6 4 12 2.5-6h4"/></svg>`,
+  home: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11l8-7 8 7v8.5a1.5 1.5 0 0 1-1.5 1.5H14v-6h-4v6H5.5A1.5 1.5 0 0 1 4 19.5z"/></svg>`,
+  grid: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/></svg>`,
+  search: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/></svg>`,
+  gift: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="8.5" width="17" height="4" rx="1"/><path d="M5 12.5v7a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-7M12 8.5v12M12 8.5c-2-3-5-3.5-5-1.5s3 1.5 5 1.5zm0 0c2-3 5-3.5 5-1.5s-3 1.5-5 1.5z"/></svg>`,
+  logout: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 4H5.5A1.5 1.5 0 0 0 4 5.5v13A1.5 1.5 0 0 0 5.5 20H10M15 8l4 4-4 4M9 12h10"/></svg>`,
+  spark: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5l1.8 5.2 5.2 1.8-5.2 1.8L12 17.5l-1.8-5.2L5 10.5l5.2-1.8zM19 16l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7z"/></svg>`,
+  chevron: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>`,
+  eye: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12s3.5-6.5 9.5-6.5 9.5 6.5 9.5 6.5-3.5 6.5-9.5 6.5S2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></svg>`,
+  bubble: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3C6.5 3 2 6.8 2 11.4c0 2.6 1.4 4.9 3.6 6.4-.2 1.3-.8 2.6-1.6 3.6 2 0 3.9-.8 5.3-1.9 .9.2 1.8.3 2.7.3 5.5 0 10-3.8 10-8.4S17.5 3 12 3z"/></svg>`,
 } as const;

@@ -13,3 +13,6 @@ device-app/build/
 __pycache__/
 .DS_Store
 .claude/worktrees/
+.vercel/
+.vercel
+.env*

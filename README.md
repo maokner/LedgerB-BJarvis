@@ -14,13 +14,14 @@ Jarvis can also run as a Telegram bot.
 
 You send text messages to Jarvis, for example "send $5 to gabe for lunch", "find 30 minutes with yadu tomorrow" or "buy me a pack of trident gum".
 For food, send "can you deliver me food" or "get me a burrito bowl from chipotle".
+Jarvis keeps one delivery address for food and Amazon orders and asks "Deliver to <address>?" before each order, so you answer yes or give another address.
 The agent is Grok, in two layers: a persona that speaks with you and an engine that does the work.
 The engine makes a proposal for an action.
 The action shows on your Ledger with its exact fields.
 Nothing occurs until you approve the action on the device.
 If you reject the action, the server cancels it.
 
-The actions are: send ETH on Base, buy an item on Amazon with USDC, order food on DoorDash with USDC, add a calendar event (with a copy on Google Calendar), send or accept a friend request, and create or delete the account.
+The actions are: send money on Base (dollars as USDC, or ETH), buy an item on Amazon with USDC, order food on DoorDash with USDC, add a calendar event (with a copy on Google Calendar), send or accept a friend request, and create or delete the account.
 The agents of two friends can speak with each other to find a meeting time and to pass notes.
 
 You can also call Jarvis on a Twilio number and speak.

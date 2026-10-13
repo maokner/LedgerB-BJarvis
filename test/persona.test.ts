@@ -1,7 +1,14 @@
+import { parseEther, Wallet } from "ethers";
 import { describe, expect, it } from "vitest";
 import { botMention, channelLabel, chatName, joinHint } from "../src/agent/bot.js";
-import { INTRO, personaSystemPrompt, plain, setupLine, strangerSystemPrompt, welcomeLine } from "../src/agent/persona.js";
-import type { Account } from "../src/db.js";
+import { confirmedAddress, INTRO, personaSystemPrompt, plain, setupLine, strangerSystemPrompt, welcomeLine } from "../src/agent/persona.js";
+import type { CompleteRequest } from "../src/agent/xai.js";
+import { openDb, type Account } from "../src/db.js";
+import { demoDoorDash } from "../src/food/demo.js";
+import { createFood } from "../src/food/food.js";
+import { baseMoney } from "../src/money.js";
+import { createTreasury } from "../src/treasury.js";
+import { call, delegate, fakeEthDevices, harness, isEngine, isPersona, PHONES, say, stubChain } from "./helpers.js";
 
 const matt = { id: 1, tag: "@matt", pubkey: "0x" + "ab".repeat(20), balance_cents: 25_000, username: "mokner", display_name: "Matt Okner" } as Account;
 
@@ -24,7 +31,7 @@ describe("persona", () => {
     expect(demo).toContain("first message since their account was created");
     expect(demo).toContain("demo money to play with");
     expect(demo).not.toContain("give the address");
-    expect(eth).toContain("ETH on Base at their address above; give the address");
+    expect(eth).toContain("USDC, plus a little ETH for the fee, on Base at their address above; give the address");
     expect(personaSystemPrompt([], matt, false, true)).not.toContain("first message since their account was created");
   });
 
@@ -72,5 +79,124 @@ describe("persona", () => {
     expect(plain("nope, _not_ gpt 👀 Just me.")).toBe("nope, not gpt. Just me.");
     expect(plain("2 * 3 = 6 and **bold** and `code`")).toBe("2 * 3 = 6 and bold and code");
     expect(plain("one thing — another")).toBe("one thing - another");
+  });
+
+  describe("checks the delivery address before every order", () => {
+    const HOME = "1 Market St Apt 5, San Francisco, CA 94105";
+
+    /** @matt in Ethereum mode with the demo DoorDash and HOME saved as the delivery address. */
+    async function setup() {
+      const wallet = new Wallet(Wallet.createRandom().privateKey);
+      const vault = new Wallet(Wallet.createRandom().privateKey);
+      const { chain } = stubChain({ [wallet.address.toLowerCase()]: parseEther("0.05") }, 4000, { [wallet.address.toLowerCase()]: 50_000_000n });
+      const money = baseMoney(chain);
+      const h = harness(0, undefined, {
+        money,
+        deviceManager: fakeEthDevices([wallet]).manager,
+        food: (ctx) => createFood({ ...ctx, provider: demoDoorDash(), treasury: createTreasury({ privateKey: vault.privateKey }, chain), money, operator: { name: "Matt" } }),
+      });
+      await h.send(PHONES.matt, "@matt");
+      const owner = h.db.accountByTag("@matt")!;
+      h.db.setDeliveryAddress(owner.id, HOME);
+      return h;
+    }
+    const engineTask = (req: CompleteRequest) => String(req.messages[0]!.content);
+
+    it("asks \"Deliver to <address>?\" without delegating, then a yes delegates with that address", async () => {
+      const h = await setup();
+      h.script((req) => {
+        expect(isPersona(req)).toBe(true);
+        expect(req.system).toContain(`Delivery address: ${HOME}. Food orders go there unless @matt names another address for one order.`);
+        expect(req.system).toContain('With one, and no address in their message: ask in one short line "Deliver to <that address>?" (for Amazon "Ship to <that address>?") and wait; do not delegate yet.');
+        return say(`Deliver to ${HOME}?`);
+      });
+      await h.send(PHONES.matt, "get me a burrito bowl from chipotle");
+      expect(h.to(PHONES.matt).at(-1)).toBe(`Deliver to ${HOME}?`);
+      expect(h.requests.some(isEngine)).toBe(false);
+
+      h.script(
+        (req) => {
+          // The question is in the history, so "yes" reads as the answer to it.
+          expect(req.messages.slice(-2).map((m) => [m.role, m.content])).toEqual([["assistant", `Deliver to ${HOME}?`], ["user", "yes"]]);
+          return delegate("order a burrito bowl from chipotle", undefined, HOME);
+        },
+        (req) => {
+          expect(isEngine(req)).toBe(true);
+          expect(engineTask(req)).toContain(`Delivery address for this order, confirmed by Matt: ${HOME}`);
+          expect(req.system).toContain("is checked with Matt before the task reaches you");
+          return say("Chipotle is open; quoting next.");
+        },
+        say("on it."),
+      );
+      await h.send(PHONES.matt, "yes");
+      expect(h.remaining()).toBe(0);
+      expect(h.logs.filter((l) => /failed/.test(l))).toEqual([]); // an assertion inside an engine step would surface here
+    });
+
+    it("delegates at once when the message already names an address", async () => {
+      const h = await setup();
+      const WORK = "500 Howard St, San Francisco, CA 94105";
+      h.script(
+        (req) => {
+          expect(isPersona(req)).toBe(true);
+          expect(req.system).toContain("An address in their message settles it at once, whether they asked with it or answered with it: delegate right away with that address as address, no question");
+          return delegate("order a burrito bowl from chipotle", undefined, WORK);
+        },
+        (req) => {
+          expect(engineTask(req)).toContain(`Delivery address for this order, confirmed by Matt: ${WORK}`);
+          return say("Chipotle is open; quoting next.");
+        },
+        say("on it."),
+      );
+      await h.send(PHONES.matt, `get me a burrito bowl from chipotle to ${WORK}`);
+      expect(h.remaining()).toBe(0);
+      expect(h.logs.filter((l) => /failed/.test(l))).toEqual([]); // an assertion inside an engine step would surface here
+      expect(h.requests.filter(isEngine)).toHaveLength(1);
+    });
+  
+    it("counts the persona's address as confirmed only when the owner gave it or answered about it", async () => {
+      const db = openDb(":memory:");
+      const owner = db.createAccount("@matt", "0x" + "ab".repeat(20), PHONES.matt, 0);
+      const WORK = "500 Howard St, San Francisco, CA 94105";
+      // Nothing saved yet: the address they gave is theirs from now on.
+      expect(confirmedAddress({ db }, owner, HOME, "1 market st apt 5. a burrito bowl")).toBe(HOME);
+      expect(db.account(owner.id)!.delivery_address).toBe(HOME);
+      // The saved one, unasked: not confirmed. Named in their text, or another address: confirmed.
+      expect(confirmedAddress({ db }, owner, HOME, "get me a burrito bowl")).toBeNull();
+      expect(confirmedAddress({ db }, owner, HOME, "a burrito bowl to 1 Market St Apt 5")).toBe(HOME);
+      expect(confirmedAddress({ db }, owner, WORK, "send it to work")).toBe(WORK);
+      expect(confirmedAddress({ db }, owner, "my place", "send it home")).toBeNull();
+      expect(confirmedAddress({ db }, owner, undefined, "get me a burrito bowl")).toBeNull();
+      // Asked about it ("Deliver to 1 Market St?"): a yes, or a pick later in the same order, counts; a no does not.
+      db.addMessage(owner.id, "assistant", { role: "assistant", content: "Deliver to 1 Market St?" });
+      expect(confirmedAddress({ db }, owner, HOME, "yes")).toBe(HOME);
+      expect(confirmedAddress({ db }, owner, HOME, "the second one")).toBe(HOME);
+      expect(confirmedAddress({ db }, owner, HOME, "no, somewhere else")).toBeNull();
+      // The persona left the address out: the conversation still says the saved one was confirmed.
+      expect(confirmedAddress({ db }, owner, undefined, "yes")).toBe(HOME);
+      db.raw.prepare("update messages set created_at = datetime('now', '-3 hours')").run();
+      expect(confirmedAddress({ db }, owner, HOME, "yes")).toBeNull();
+    });
+
+    it("an order the persona sends to the saved address unasked comes back as the question", async () => {
+      const h = await setup();
+      h.script(
+        () => delegate("order a burrito bowl from chipotle", undefined, HOME),
+        (req) => {
+          expect(engineTask(req)).not.toContain("confirmed by Matt");
+          // Copying the saved address from the facts is no way around the question.
+          return call("search_doordash", { query: "chipotle", address: HOME });
+        },
+        (req) => {
+          // The engine stops on the refusal, and the persona gets the question to ask.
+          expect(isPersona(req)).toBe(true);
+          expect(String(req.messages.at(-1)!.content)).toBe(`Nothing searched or ordered yet: Matt has to confirm the address first. Ask them exactly: "Deliver to ${HOME}?"`);
+          return say(`Deliver to ${HOME}?`);
+        },
+      );
+      await h.send(PHONES.matt, "get me a burrito bowl from chipotle");
+      expect([h.remaining(), h.to(PHONES.matt).at(-1)]).toEqual([0, `Deliver to ${HOME}?`]);
+      expect(h.logs.filter((l) => /failed/.test(l))).toEqual([]);
+    });
   });
 });

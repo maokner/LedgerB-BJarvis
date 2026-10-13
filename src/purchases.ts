@@ -16,10 +16,11 @@
  * no-purchase; "ordering" is written before the order is placed and is never re-run, so a crash cannot order twice.
  */
 import { newActionId, toFieldText } from "./actions.js";
+import { cleanAddress, looksLikeAddress, noAddress, savedAddress, shortAddress } from "./address.js";
 import { formatUsdc, txLink } from "./chain.js";
 import type { Account, Db, Purchase, PurchaseStatus } from "./db.js";
 import { formatCents } from "./format.js";
-import { type Merchant, MerchantError, type Outcome, type Quote, shortTitle } from "./merchant.js";
+import { type Merchant, MerchantError, type Outcome, type Quote, shortTitle, WrongAddress, wrongAddressText } from "./merchant.js";
 import { formatEth, type Money } from "./money.js";
 import type { Treasury } from "./treasury.js";
 import type { ActionStatus } from "./db.js";
@@ -49,16 +50,26 @@ export interface PurchaseWording {
   ordered(quote: Quote, outcome: Extract<Outcome, { status: "ordered" }>, paid: string): string;
   /** The owner-facts line: what can be bought here and how. */
   fact(owner: Account, terms: { limit: string; treasury: string; refunds: boolean }): string;
+  /**
+   * The order ships to the owner: propose() takes the address given for this order, else the owner's saved delivery
+   * address, refuses without one, and hands it to merchant.prepare() and the quote. Food quotes carry their own address.
+   */
+  shipsToOwner?: boolean;
 }
 
 const BUYABLE_ASIN = /^[A-Z0-9]{10}$/;
 
-/** Amazon: one unit of one item by its ASIN, shipped to the operator's address. */
-export function amazonWording(store: string, shipsTo: string): PurchaseWording {
+/** Amazon: one unit of one item by its ASIN, shipped to the owner's delivery address (or the one named for the order). */
+export function amazonWording(store: string): PurchaseWording {
   const item = (quote: Quote) => toFieldText(shortTitle(quote.title, 48));
+  const shipTo = (quote: Quote) => {
+    if (!quote.shipTo) throw new Error("an Amazon purchase without its address");
+    return quote.shipTo;
+  };
   return {
     code: "BUY",
     noun: `${store} purchase`,
+    shipsToOwner: true,
     id(raw) {
       const asin = raw.trim().toUpperCase();
       return BUYABLE_ASIN.test(asin) ? { id: asin } : { error: `Error: Item must be the 10-character item id from search_${store.toLowerCase()}, like B0DEMO0001.` };
@@ -67,15 +78,18 @@ export function amazonWording(store: string, shipsTo: string): PurchaseWording {
       `Error: ${shortTitle(quote.title, 60)} costs ${formatCents(quote.totalCents)} all in (item ${formatCents(quote.itemCents)} plus shipping and tax), over the ${limit} limit. Tell the owner; do not propose it.`,
     fields: (quote, usdc, treasury) => [
       { label: "Item", value: item(quote) },
+      { label: "Ship", value: shortAddress(shipTo(quote)) },
       { label: "Total", value: formatCents(quote.totalCents) },
       { label: "USDC", value: usdc },
       { label: "To", value: treasury },
     ],
     prompt: (quote, usdc, treasury, refunds) =>
-      `Please confirm on your Ledger: Buy on ${store}: ${item(quote)}, ${formatCents(quote.totalCents)} all in. That is ${usdc} USDC to the AgentSign treasury ${treasury}; it ships to ${shipsTo}${refunds ? ", and comes back to you if the order doesn't go through" : ""}.`,
-    ordered: (quote, outcome, paid) => `Order confirmed on ${store}: ${shortTitle(quote.title, 80)}. Order ${outcome.orderId}, paid ${paid}. It ships to ${shipsTo}.`,
+      `Please confirm on your Ledger: Buy on ${store}: ${item(quote)}, ${formatCents(quote.totalCents)} all in. That is ${usdc} USDC to the AgentSign treasury ${treasury}; it ships to ${shipTo(quote)}${refunds ? ", and comes back to you if the order doesn't go through" : ""}.`,
+    // A row quoted before addresses were per order has none; its text just leaves the address out.
+    ordered: (quote, outcome, paid) => `Order confirmed on ${store}: ${shortTitle(quote.title, 80)}. Order ${outcome.orderId}, paid ${paid}.${quote.shipTo ? ` It ships to ${quote.shipTo}.` : ""}`,
     fact: (owner, t) =>
-      `${store}: ${owner.tag} can buy things there through you, up to ${t.limit} per order all in, paid in USDC on Base from their address (plus a little ETH for the fee) to the treasury ${t.treasury}, shipped to ${shipsTo}.${t.refunds ? " The USDC comes back if the order does not go through." : ""}`,
+      `${store}: ${owner.tag} can buy things there through you, up to ${t.limit} per order all in, paid in USDC on Base from their address (plus a little ETH for the fee) to the treasury ${t.treasury}. ` +
+      `Orders ship to the delivery address in these facts unless they name another one for that order.${t.refunds ? " The USDC comes back if the order does not go through." : ""}`,
   };
 }
 
@@ -88,9 +102,12 @@ export interface PurchasesOptions {
   channel: Pick<Channel, "send">;
   /** Per-order cap on the checkout total. Default $20.00. */
   limitCents?: number;
-  /** Where Amazon ships (the operator's default address), in words: "Matt's address". Only for the default wording. */
+  /**
+   * The operator's Amazon account's own address, in words (PURCHASE_SHIPS_TO, "Matt's address"). Orders ship to the
+   * owner's delivery address; this only names the account's address when the store cannot ship elsewhere (WrongAddress).
+   */
   shipsTo?: string;
-  /** The store's code and texts. Default: Amazon (BUY), shipped to `shipsTo`. */
+  /** The store's code and texts. Default: Amazon (BUY), shipped to the owner's delivery address. */
   wording?: PurchaseWording;
   /** The operator, texted when a purchase needs a person (an uncertain order, a failed refund). The handle is looked up when needed. */
   operator?: { name: string; handle?: () => string | undefined };
@@ -107,8 +124,12 @@ export interface Purchases {
   readonly refunds: boolean;
   /** Products for the model, as JSON, or an "Error: ..." line. */
   search(query: string, limit?: number): Promise<string>;
-  /** The action for what `id` names (an ASIN, a food quote id): quote, cap, USDC transfer to the treasury. Or an "Error: ..." line for the model. */
-  propose(owner: Account, id: string): Promise<{ action: Action; prompt: string } | string>;
+  /**
+   * The action for what `id` names (an ASIN, a food quote id): quote, cap, USDC transfer to the treasury. Or an
+   * "Error: ..." line for the model. `shipTo`: the address for this order where the store ships to the owner
+   * (Amazon); default their saved delivery address.
+   */
+  propose(owner: Account, id: string, options?: { shipTo?: string }): Promise<{ action: Action; prompt: string } | string>;
   /** A proposal that never reached the Ledger (another action was pending). */
   cancel(actionId: string): void;
   /** Approvals hook: the action was executed (payment broadcast) or ended otherwise. Other codes are ignored. Work continues in the background. */
@@ -127,8 +148,7 @@ export function createPurchases(o: PurchasesOptions): Purchases {
   const { db, merchant, treasury, money, channel } = o;
   const limitCents = o.limitCents ?? DEFAULT_LIMIT_CENTS;
   const operator = o.operator ?? { name: "the operator" };
-  const shipsTo = o.shipsTo ?? `${operator.name}'s address`;
-  const wording = o.wording ?? amazonWording(merchant.name, shipsTo);
+  const wording = o.wording ?? amazonWording(merchant.name);
   const { code } = wording;
   const short = (title: string) => shortTitle(title, wording.titleLength);
   const log = o.log ?? (() => {});
@@ -232,20 +252,31 @@ export function createPurchases(o: PurchasesOptions): Purchases {
       return JSON.stringify({
         store: merchant.name,
         limit: `${formatCents(limitCents)} per order, all in (item, shipping, tax)`,
-        ships_to: shipsTo,
+        ships_to: "the owner's delivery address (in the facts), or Ship <address> on propose_action BUY for another one",
         note: "Listed prices leave out shipping and tax. propose_action BUY with Item <asin> quotes the exact total and refuses anything over the limit.",
         results: products.map((p) => ({ asin: p.asin, title: p.title, price: p.priceCents === null ? "no price shown" : formatCents(p.priceCents), ...(p.rating ? { rating: p.rating } : {}), url: p.url })),
       });
     },
 
-    async propose(owner, raw) {
+    async propose(owner, raw, options = {}) {
       const parsed = wording.id(raw);
       if ("error" in parsed) return parsed.error;
+      // Where it ships: the address named for this order, else the owner's saved one (read fresh: it may have been saved this turn).
+      let shipTo: string | undefined;
+      if (wording.shipsToOwner) {
+        const given = cleanAddress(options.shipTo);
+        if (given && !looksLikeAddress(given)) return "Error: Ship does not look like a street address. Ask the owner for the full one: number, street, city (and apartment, if any).";
+        shipTo = given || savedAddress(db, owner);
+        if (!shipTo) return noAddress("ship");
+      }
       let quote: Quote;
       try {
-        quote = await merchant.prepare(parsed.id);
+        quote = await merchant.prepare(parsed.id, shipTo ? { shipTo } : undefined);
+        if (shipTo) quote = { ...quote, shipTo };
       } catch (err) {
-        if (err instanceof MerchantError) return `Error: ${err.message} Tell the owner; do not propose it.`;
+        // A store that cannot ship there names its account's address only in words (PURCHASE_SHIPS_TO), never the address itself.
+        if (err instanceof WrongAddress) return `Error: ${wrongAddressText(err.address, o.shipsTo)}. Tell the owner; do not propose it.`;
+        if (err instanceof MerchantError) return `Error: ${err.message.replace(/[^.!?]$/, "$&.")} Tell the owner; do not propose it.`;
         log(`prepare ${parsed.id} failed: ${(err as Error).stack ?? err}`);
         return `Error: ${merchant.name} could not quote that right now. Tell the owner to try again later.`;
       }

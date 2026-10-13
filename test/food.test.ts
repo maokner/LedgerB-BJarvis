@@ -5,7 +5,8 @@ import { newActionId } from "../src/actions.js";
 import { erc20TransferData, USDC } from "../src/chain.js";
 import { openDb } from "../src/db.js";
 import { DEMO_RESTAURANTS, demoDoorDash } from "../src/food/demo.js";
-import { createFood, type Food, shortAddress } from "../src/food/food.js";
+import { shortAddress } from "../src/address.js";
+import { createFood, type Food } from "../src/food/food.js";
 import type { FoodQuote } from "../src/food/provider.js";
 import type { Outcome } from "../src/merchant.js";
 import { baseMoney } from "../src/money.js";
@@ -28,7 +29,7 @@ const TOTAL = "$25.82";
 const UNITS = 25_820_000n;
 
 /** The whole app in Ethereum mode with one owner (@matt), the demo DoorDash and a funded treasury. */
-async function setup(options: { address?: string | null; receipt?: "confirmed" | "failed" | "timeout"; onConfirm?: (q: FoodQuote) => Outcome | undefined } = {}) {
+async function setup(options: { address?: string | null; asked?: boolean; receipt?: "confirmed" | "failed" | "timeout"; onConfirm?: (q: FoodQuote) => Outcome | undefined } = {}) {
   const { chain, sent } = stubChain({ [addr(matt)]: parseEther("0.05"), [addr(vault)]: parseEther("0.01") }, 4000, { [addr(matt)]: 50_000_000n, [addr(vault)]: 30_000_000n });
   if (options.receipt) chain.waitForReceipt = async () => options.receipt!;
   const devices = fakeEthDevices([matt]);
@@ -43,7 +44,11 @@ async function setup(options: { address?: string | null; receipt?: "confirmed" |
   });
   await h.send(PHONES.matt, "@matt");
   const owner = h.db.accountByTag("@matt")!;
-  if (options.address !== null) h.db.setDeliveryAddress(owner.id, options.address ?? HOME);
+  if (options.address !== null) {
+    h.db.setDeliveryAddress(owner.id, options.address ?? HOME);
+    // Jarvis already asked about the saved address for this order, so the persona's address counts as confirmed.
+    if (options.asked !== false) h.db.addMessage(owner.id, "assistant", { role: "assistant", content: `Deliver to ${options.address ?? HOME}?` });
+  }
   return { ...h, sent, devices, provider, treasury, food, owner, chain };
 }
 
@@ -53,7 +58,7 @@ const last = (req: CompleteRequest) => String(req.messages.at(-1)!.content);
 function orderScript(check: { search?: (json: string) => void; quote?: (json: string) => void; beforePropose?: () => void } = {}) {
   let quoteId = "";
   return [
-    delegate("order a burrito bowl and two chips from chipotle"),
+    delegate("order a burrito bowl and two chips from chipotle", undefined, HOME),
     (req: CompleteRequest) => {
       expect(isEngine(req)).toBe(true);
       return call("search_doordash", { query: "chipotle" });
@@ -82,12 +87,12 @@ describe("ordering food on DoorDash with USDC", () => {
   it("searches, quotes, pays the treasury from the Ledger, waits for Base, orders, and texts each step once", async () => {
     const h = await setup({ address: null });
     h.script(
-      delegate("order a burrito bowl and two chips from chipotle", `deliver to ${HOME}`),
+      delegate("order a burrito bowl and two chips from chipotle", `deliver to ${HOME}, their own address`),
       (req) => {
         expect(req.tools.map((t) => t.name)).toEqual(expect.arrayContaining(["set_delivery_address", "search_doordash", "doordash_menu", "quote_doordash", "list_purchases", "propose_action"]));
         expect(req.tools.map((t) => t.name)).not.toContain("search_amazon");
         expect(req.system).toContain("DoorDash: @matt can order food delivered through you, up to $40.00 per order all in (food, fees, tax and tip), paid in USDC on Base");
-        expect(req.system).toContain("Delivery address: none saved yet; ask for it before searching.");
+        expect(req.system).toContain("Delivery address: none saved yet; ask for it as soon as they want to order (food orders go there).");
         expect(req.system).toContain("Amazon: not available on this server");
         return call("set_delivery_address", { address: HOME });
       },
@@ -165,7 +170,7 @@ describe("ordering food on DoorDash with USDC", () => {
     const h = await setup();
     const pies = DEMO_RESTAURANTS[2]!; // Joe's Pizza
     h.script(
-      delegate("two large pepperoni pies from joe's"),
+      delegate("two large pepperoni pies from joe's", undefined, HOME),
       () => call("quote_doordash", { store_id: pies.storeId, items: [{ item_id: pies.menu[3]!.itemId, quantity: 2 }] }),
       (req) => {
         expect(last(req)).toMatch(/^Error: that order comes to \$\d+\.\d{2} all in \(food \$61\.00 plus fees, tax and tip\), over the \$40\.00 limit\. Tell the owner; offer fewer items\. Do not propose it\.$/);
@@ -190,13 +195,30 @@ describe("ordering food on DoorDash with USDC", () => {
     expect(h.db.raw.prepare("select count(*) as n from purchases").get()).toEqual({ n: 0 });
   });
 
+  it("sends the order back as a question when the owner has not confirmed the saved address", async () => {
+    const h = await setup({ asked: false });
+    h.script(
+      delegate("get me a burrito bowl from chipotle"),
+      () => call("search_doordash", { query: "chipotle" }),
+      (req) => {
+        expect(isEngine(req)).toBe(false);
+        expect(last(req)).toBe(`Nothing searched or ordered yet: Matt has to confirm the address first. Ask them exactly: "Deliver to ${HOME}?"`);
+        return say(`Deliver to ${HOME}?`);
+      },
+    );
+    await h.send(PHONES.matt, "get me a burrito bowl from chipotle");
+    expect([h.remaining(), h.to(PHONES.matt).at(-1)]).toEqual([0, `Deliver to ${HOME}?`]);
+    expect(h.logs.filter((l) => /failed/.test(l))).toEqual([]);
+    expect(h.provider.confirmed).toEqual([]);
+  });
+
   it("asks for an address before searching when none is saved", async () => {
     const h = await setup({ address: null });
     h.script(
       delegate("get me sushi"),
       () => call("search_doordash", { query: "sushi" }),
       (req) => {
-        expect(last(req)).toBe("Error: there is no delivery address. Ask the owner where to deliver; when they give their own address, save it with set_delivery_address.");
+        expect(last(req)).toBe("Error: there is no delivery address. Ask the owner where to deliver; when they give their own, save it with set_delivery_address.");
         return call("quote_doordash", { store_id: "1000404", items: [{ item_id: "2000401", quantity: 1 }] });
       },
       (req) => {

@@ -1,6 +1,7 @@
 /** Shared by the persona and the engine: the tool loop and persisted history. Plus peer turns between two friends' agents. */
 import type { Approvals } from "../approvals.js";
 import { describeAction } from "../actions.js";
+import { addressFact } from "../address.js";
 import { createCalendar, type Calendar } from "../calendar/google.js";
 import type { Money } from "../money.js";
 import type { Food } from "../food/food.js";
@@ -86,6 +87,8 @@ export function ownerFacts(db: Db, owner: Account, balance: string, calendar?: C
     googleLine,
     purchasesFact(purchases, owner),
     purchasesFact(food, owner, "EAT"),
+    // One saved address for both stores, shown once.
+    purchases || food ? addressFact(owner, purchases && food ? "Food and Amazon orders" : food ? "Food orders" : "Amazon orders") : "",
     phoneFact(phone, owner),
     notes.length ? `Notes saved about ${owner.tag}:\n${notes.join("\n")}` : "",
   ].filter(Boolean);

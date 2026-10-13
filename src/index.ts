@@ -158,11 +158,13 @@ log(`AgentSign listening on ${channel.name} (mode ${mode}, model ${process.env.X
 function setupAccount(): ReturnType<typeof createAccountApi> {
   const origins = (process.env.DASHBOARD_ORIGINS ?? "").split(",").map((o) => o.trim()).filter(Boolean);
   const jarvis = channelName === "photon" ? process.env.PHOTON_NUMBER?.trim() || undefined : channelName === "telegram" ? `@${(process.env.TELEGRAM_BOT_USERNAME ?? "").replace(/^@/, "")}` : undefined;
+  // The number the page's "Text Jarvis" opens Messages with: the iMessage line (PHOTON_NUMBER), whichever channel runs.
+  const text = process.env.PHOTON_NUMBER?.trim() || undefined;
   const api = createAccountApi({
     db, approvals: app.approvals, calendar, money, phone, publicUrl, allowedOrigins: origins, log,
     purchases: purchases && shipsTo ? { limitCents: purchases.limitCents, shipsTo } : undefined,
     food: food ? { limitCents: food.limitCents, provider: food.provider } : undefined,
-    channel: { kind: channelName === "telegram" ? "Telegram" : channelName === "dev" ? "dev" : "iMessage", jarvis: jarvis && jarvis !== "@" ? jarvis : undefined },
+    channel: { kind: channelName === "telegram" ? "Telegram" : channelName === "dev" ? "dev" : "iMessage", jarvis: jarvis && jarvis !== "@" ? jarvis : undefined, text },
   });
   log(`account page: on at ${publicUrl}/${origins.length ? `, also served from ${origins.join(", ")}` : ""}`);
   return api;

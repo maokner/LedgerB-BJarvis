@@ -102,6 +102,13 @@ For account creation the app lists devices, removes the pubkeys already bound to
 
 Devices come from `DEVICES` in the environment: `speculos:<host>:<port>` entries and `hid` for USB.
 
+## Money on Base
+
+In Ethereum mode a payment (`PAY`) is a Base transaction the Ethereum app signs.
+A dollar amount goes out as USDC when the owner holds at least that much USDC (a `transfer` on the USDC contract, clear-signed with Ledger's token descriptor, fields `To`, `Amount`, `USDC`, `Address`, `Memo`); otherwise it goes as ETH at the spot price (fields `To`, `Amount`, `ETH`, ...).
+An amount written in ETH ("0.001 ETH") always goes as ETH.
+ETH pays the network fee either way, so an address needs a little ETH even when it pays in USDC; the texts name what moved ("Sent 5 USDC ($5.00) to @yadu on Base").
+
 ## Two device modes
 
 `DEVICE_MODE=eth` (default, the real thing): the Ledger's own Ethereum app.
@@ -177,16 +184,18 @@ The deployed configuration is a receive-only treasury (`TREASURY_ADDRESS`, no ke
 
 ```
 owner: "buy me trident gum"
+  persona: "Ship to 1 Market St Apt 5, San Francisco, CA 94105?"   owner: "yes"   (delegate with that address)
   engine: search_amazon ──► merchant.search          (anonymous read of amazon.com)
-  engine: propose_action BUY Item <asin>
-          ──► merchant.prepare: Buy Now, read the exact order total, leave   (nothing held)
+  engine: propose_action BUY Item <asin> [Ship <address>]
+          ──► the address: Ship, else the one the owner confirmed; none at all: an error that asks for it
+          ──► merchant.prepare(asin, { shipTo }): Buy Now, the checkout's address must be the owner's, read the exact order total, leave   (nothing held)
           ──► cap: total <= PURCHASE_LIMIT_USD (default $20), else an error the model reports
           ──► money.transferUsdc: USDC units for the total, the USDC balance, gas in ETH, Ledger's token descriptor
           ──► purchases row "proposed"; BUY on the Ledger (the Ethereum app clear-signs "4.35 USDC" to the treasury)
   signed  ──► tx broadcast, row "funded", text "Paid ..."
   receipt ──► Base confirms (3 tries of 2 min; failed: "cancelled"; still pending: "review")
           ──► row "ordering"            (the checkpoint: written before the side effect, never re-run)
-          ──► merchant.confirm: Buy Now again, same item, same total, Place your order
+          ──► merchant.confirm: Buy Now again, same item, same total, same address, Place your order
                 ordered      ──► row "ordered", text "Ordered on Amazon: ..., Order 111-..."
                 no_purchase  ──► row "refunding", treasury pays the USDC back (gas on the treasury), "refunded", text with the basescan link
                 uncertain    ──► row "review", the owner and the operator are texted; nothing is retried or refunded
@@ -201,10 +210,17 @@ The treasury can be receive-only (`TREASURY_ADDRESS`, the deployed default `0xf8
 `src/amazon/browser.ts` is the real one: Playwright Chromium with the operator's exported Amazon session (`pnpm amazon:login` writes it; `AMAZON_STORAGE_STATE` carries it), **Buy Now** only (never the cart, which may hold the operator's own things), exactly one item on the checkout page or it stops, screenshots on every failure in `data/amazon-shots/`, and `AMAZON_DRY_RUN=1` to go through everything but the order button.
 Its checkout selectors are built from Amazon's known layouts and still need a signed-in dry run against the real account.
 
-Texts to the owner, one per step: the reply with the confirm prompt (item, total all in, USDC, treasury address, where it ships, and "comes back to you if the order doesn't go through" only when the treasury can refund), "Paid ..." with the basescan link once broadcast, then "Order confirmed on Amazon ..." or "Amazon didn't take the order (...), your USDC is on its way back" or "I couldn't tell whether Amazon took the order ...".
+`BUY` fields on the Ledger and the approval page: `Item Trident Original Sugar Free Gum, 14 Pieces (P...`, `Ship 1 Market St Apt 5, San Francisco` (the street and the city), `Total $4.35`, `USDC 4.35`, `To 0x...` (the treasury).
+The full address rides on the quote (`Quote.shipTo`, stored in the purchase row's quote JSON), so a restart still orders to it.
+
+Texts to the owner, one per step: the reply with the confirm prompt (item, total all in, USDC, treasury address, the full address it ships to, and "comes back to you if the order doesn't go through" only when the treasury can refund), "Paid ..." with the basescan link once broadcast, then "Order confirmed on Amazon ..." or "Amazon didn't take the order (...), your USDC is on its way back" or "I couldn't tell whether Amazon took the order ...".
 Outcomes are also system notes in the owner's history, so the next turn can answer "did it ship?".
 The operator (`OPERATOR_TAG`) is texted only for `review` and `refund_failed`.
-Everything ships to the Amazon account's default address (`PURCHASE_SHIPS_TO` says so to buyers); an order is one unit of one item.
+An order is one unit of one item, shipped to the owner's delivery address (see "The delivery address" below) or to the `Ship` address named for that order.
+The browser store can only ship where the operator's Amazon account's checkout says: `readCheckout` reads the checkout's address block (known containers like `#shipaddress`, then a "Delivering to" / "Ship to" line in the visible text), and the owner's street line (its first comma-separated part, letters and digits, suffixes like Street/St and apartment words folded) must appear in it as whole words, at prepare and again at confirm.
+A mismatch at prepare stops before the Ledger with "Amazon would ship this to <the account's address in words, `PURCHASE_SHIPS_TO`>, not to <the owner's address>; only the operator can change the Amazon account's address"; at confirm it is a `no_purchase` ("the Amazon account's own address"), so the owner is refunded; the account's real address goes only to the server log, never to the owner.
+A checkout that shows no address is not blocked (the log says so); the driver never edits the account's addresses.
+The demo and mock stores ship anywhere and echo the address.
 
 ## Ordering food on DoorDash (`src/food/`, `src/purchases.ts`, `src/treasury.ts`)
 
@@ -214,7 +230,8 @@ So every rule of the Amazon section holds here unchanged: the cap at prepare and
 
 ```
 owner: "hey can you deliver me a burrito bowl"
-  engine: (no address in the facts) ask; set_delivery_address with the one the owner gives   (accounts.delivery_address)
+  persona: (an address in the facts) "Deliver to 1 Market St Apt 5, San Francisco, CA 94105?"   owner: "yes"
+           (none saved) "where to?"; the first address they give is saved as theirs   (accounts.delivery_address)
   engine: search_doordash "burrito"  ──► provider.searchRestaurants(query, address)
   engine: doordash_menu <store_id>   ──► provider.menu: item ids, names, prices
   engine: quote_doordash <store_id> [{item_id, quantity}] tip 15%
@@ -251,8 +268,16 @@ DoorDash has no public consumer ordering API, so there are three providers behin
   The command table at the top of the file is the only place the syntax lives, so adjusting it is the whole job when the docs land.
   Every reply is parsed defensively, and the same cart and checkout rules apply.
 
-Engine tools, only where food ordering is set up: `set_delivery_address` (only an address the owner gives as their own), `search_doordash`, `doordash_menu`, `quote_doordash`, and `list_purchases` (both stores in one list).
+Engine tools, only where food ordering is set up: `search_doordash`, `doordash_menu`, `quote_doordash`; with either store, `set_delivery_address` (only an address the owner gives as their own) and `list_purchases` (both stores in one list).
 Without an address, search and quote return an error that tells the engine to ask for one.
+
+### The delivery address (`src/address.ts`)
+
+One saved address per owner (`accounts.delivery_address`) for both stores; the owner facts show it once ("Delivery address: ..." or "none saved yet"), and `set_delivery_address` replaces it.
+Jarvis checks it before every order, as Matt asked: with a saved address and no address in the message, the persona asks in one line "Deliver to <address>?" (for Amazon "Ship to <address>?") and waits; a yes delegates with that address, another address in the answer delegates with that one (saved too when they call it theirs), and with none saved it asks where to deliver first.
+Code, not the model, decides whether the address was confirmed, so an order never goes to the saved address unasked: the persona passes the address in `delegate`'s `address`, and `confirmedAddress` (`src/agent/persona.ts`) accepts it when only the owner could have given it (none saved yet, which saves it as theirs, or not the saved one), when their latest text names the saved one, or when Jarvis asked about it in the last two hours and they did not answer no.
+The engine's text tasks get that address (or null); `search_doordash`, `quote_doordash` and `propose_action BUY` then go to it or to an address the task names, and refuse the saved address unconfirmed (even copied from the facts) with an error that ends the task with the question for the persona to send.
+Calls skip the gate: the voice instructions ask once whether it goes to "your saved address" (addresses are never read aloud).
 The persona tells the same three-step story as for Amazon: the Ledger, the payment lands, the order is placed with its ETA; it says the food is on its way only once the system note exists.
 
 `EAT` fields on the Ledger and the approval page: `From Chipotle Mexican Grill`, `Order 1x Burrito Bowl, 2x Chips`, `Deliver 1 Market St Apt 5, San Francisco` (the street and the city), `Total $25.82` (food, fees, tax and tip), `USDC 25.82`, `To 0x...` (the treasury).

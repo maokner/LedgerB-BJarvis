@@ -114,7 +114,14 @@ export interface MeView {
   createdAt: string;
   displayName?: string;
   /** Where the owner talks to Jarvis. `handle` is the owner's own address there (a phone, an email, "tg:<id>"). */
-  channel: { kind: "iMessage" | "Telegram" | "dev"; handle: string; /** Jarvis's own number or @bot, as the owner reaches it. */ jarvis?: string };
+  channel: {
+    kind: "iMessage" | "Telegram" | "dev";
+    handle: string;
+    /** Jarvis's own number or @bot on this channel, as the owner reaches it. */
+    jarvis?: string;
+    /** The number to text Jarvis at (E.164); the page's "Text Jarvis" opens Messages with it. */
+    text?: string;
+  };
   /** "0.012 ETH ($48.20) and 12 USDC on Base"; absent when Base could not be read in time. */
   balance?: string;
   /** Where the account's chain activity is listed. */
@@ -122,7 +129,7 @@ export interface MeView {
   policy: PolicyView;
   connections: ConnectionView[];
   friends: FriendView[];
-  /** Newest first, at most 20. */
+  /** Newest first, at most 50. */
   activity: ActivityView[];
   /** The approval the owner's Ledger is waiting on right now, if any, with its page. */
   pending?: { code: string; title: string; summary: string; path?: string; url?: string };

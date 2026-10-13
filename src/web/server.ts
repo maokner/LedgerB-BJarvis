@@ -5,10 +5,11 @@
  *   POST /sign/:token/reject   rejected on device  GET  /ledger.js           the browser bundle
  *   POST /sign/:token/log      { lines } from the page's step log, printed as "page <token8>: <line>" (1 per second, pending jobs only)
  *   GET  /                     the account page (src/web/dashboard.ts; its data comes from /api/*, src/web/account.ts, passed in as a route)
- *   GET  /dashboard.js         its browser bundle
+ *   GET  /dashboard.js         its browser bundle          GET  /jarvis.png          the logo (src/web/jarvis.png)
  * Plus optional extra routes (the account API; Google Calendar, src/calendar/google.ts; phone calls and MCP, src/voice/routes.ts), tried first,
  * and websocket upgrades (Twilio media streams, src/voice/twilio.ts); an upgrade nobody takes is closed.
  */
+import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
 import { txLink } from "../chain.js";
@@ -23,6 +24,9 @@ import { dashboardPage } from "./dashboard.js";
 import { SECURITY_HEADERS as SECURITY } from "./headers.js";
 import { notFoundPage, page } from "./page.js";
 
+
+/** The wordmark's robot, read once. */
+const LOGO = readFileSync(new URL("./jarvis.png", import.meta.url));
 
 export interface WebServer {
   port: number;
@@ -62,6 +66,7 @@ export async function startWebServer(options: { db: Db; remote: RemoteDeviceMana
     if (req.method === "GET" && path === "/ledger.js") return send(200, "text/javascript; charset=utf-8", await client());
     if (req.method === "GET" && path === "/dashboard.js") return send(200, "text/javascript; charset=utf-8", await client("dashboard"));
     if (req.method === "GET" && (path === "/" || path === "/index.html")) return send(200, "text/html; charset=utf-8", dashboardPage());
+    if (req.method === "GET" && path === "/jarvis.png") return void res.writeHead(200, { ...SECURITY, "content-type": "image/png", "cache-control": "public, max-age=86400" }).end(LOGO);
     const m = /^\/sign\/([0-9a-f]{64})(\/job|\/state|\/result|\/reject|\/log)?\/?$/.exec(path);
     const job = m && remote.job(m[1]!);
     if (!m || !job) return m && !m[2] ? send(404, "text/html; charset=utf-8", notFoundPage()) : json(404, { ok: false, error: "This link is not valid." });

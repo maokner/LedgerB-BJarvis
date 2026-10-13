@@ -38,7 +38,7 @@ swap_size_mb = 512
   FOOD_LIMIT_USD = "40"
   TZ = "America/Los_Angeles"
   # Where the static copy of the account page lives (vercel.json); its API calls are proxied here.
-  DASHBOARD_ORIGINS = "https://agentsign.vercel.app"
+  DASHBOARD_ORIGINS = "https://agentsign-pi.vercel.app"
 
 [http_service]
   internal_port = 7788

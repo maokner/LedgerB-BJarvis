@@ -4,6 +4,7 @@
  * and the people confirm by text (src/meetings.ts), nothing on a Ledger.
  */
 import { describeAction, newActionId, toFieldText } from "../actions.js";
+import { cleanAddress, mentionsAddress, noAddress, saveAddress, savedAddress } from "../address.js";
 import type { Approvals } from "../approvals.js";
 import { PENDING_ERROR } from "../approvals.js";
 import type { Account, Db } from "../db.js";
@@ -35,6 +36,8 @@ const range = {
   required: ["from", "to"],
 };
 const none = { type: "object", properties: {} };
+/** How an order tool's error starts when the owner has not confirmed the delivery address (the engine ends its task on it). */
+export const UNCONFIRMED_ADDRESS = "Error: the owner has not confirmed where this order goes.";
 /** Longest note one friend can send another in one go. */
 export const NOTE_MAX = 500;
 
@@ -135,12 +138,12 @@ export const OWNER_TOOL_SPECS: ToolSpec[] = [
     description:
       "Do or propose an action: payments and deleting the account always go to the owner's Ledger; calendar events, friend requests and accepts go there only when the owner's Ledger policy says so (see the facts), otherwise they happen at once and the result says so. " +
       "On the Ledger the owner sees exactly these fields. " +
-      "PAY: To @tag (or a 0x address in Ethereum mode), Amount like $5.00 (or like 0.001 ETH in Ethereum mode), optional Memo (a few words). " +
+      "PAY: To @tag (or a 0x address in Ethereum mode), Amount like $5.00 (sent as USDC on Base when the owner holds enough, else as ETH; or like 0.001 ETH to send ETH), optional Memo (a few words). " +
       "CAL: the owner's own event (never a meeting with a friend: that is propose_meeting): Title, When as YYYY-MM-DD HH:MM-HH:MM (24h local time). " +
       "FRQ (friend request): To @tag. FAC (accept a friend request): From @tag. " +
       "DEL (delete the owner's own account, only when they clearly ask to delete, close or reset it): no fields needed. " +
-      "BUY (buy one item on Amazon, paid in USDC; only where the facts say Amazon is available): Item <the 10-character item id from search_amazon>. " +
-      "It quotes the exact total with shipping and tax, refuses anything over the limit, and the money comes back if the order does not go through. " +
+      "BUY (buy one item on Amazon, paid in USDC; only where the facts say Amazon is available): Item <the 10-character item id from search_amazon>, and Ship <full address> only when the owner named another address for this order (default: their saved delivery address). " +
+      "It quotes the exact total with shipping and tax, refuses anything over the limit or without an address, and the money comes back if the order does not go through. " +
       "EAT (order food on DoorDash, paid in USDC; only where the facts say DoorDash is available): Order <the quote_id from quote_doordash>. It prices the quoted order again and refuses anything over the limit.",
     parameters: {
       type: "object",
@@ -174,13 +177,16 @@ export const LIST_PURCHASES_SPEC: ToolSpec = {
   parameters: none,
 };
 
+/** Where Amazon or food ordering is set up: the one address both use (src/address.ts). */
+export const DELIVERY_ADDRESS_SPEC: ToolSpec = {
+  name: "set_delivery_address",
+  description:
+    "Save the owner's delivery address: where food orders are delivered and Amazon orders ship. Only an address the owner gives as their own (home, work, \"my new place\"); never one you guessed, and not one meant for just this order (that goes in the order's address or Ship instead). Replaces the saved one.",
+  parameters: { type: "object", properties: { address: { type: "string", description: "Street and number, apartment if any, city, ZIP, like '1 Market St Apt 5, San Francisco, CA 94105'" } }, required: ["address"] },
+};
+
 /** Only where food ordering is set up (src/food/). */
 export const FOOD_TOOL_SPECS: ToolSpec[] = [
-  {
-    name: "set_delivery_address",
-    description: "Save the owner's delivery address for food orders. Only an address the owner gives as their own (home, work); never one you guessed. Replaces the saved one.",
-    parameters: { type: "object", properties: { address: { type: "string", description: "Street and number, apartment if any, city, ZIP, like '1 Market St Apt 5, San Francisco, CA 94105'" } }, required: ["address"] },
-  },
   {
     name: "search_doordash",
     description: "Find restaurants on DoorDash that deliver to the owner's address and match what they feel like. Returns store ids, names, ratings, ETAs and delivery fees.",
@@ -319,8 +325,11 @@ function readFields(raw: unknown): Map<string, string> {
   return out;
 }
 
-/** Turns what the model proposed into an Action a device can show, or an error the model can act on. */
-export async function buildAction(db: Db, owner: Account, code: unknown, rawFields: unknown, money: Money = demoMoney(), purchases?: Purchases, food?: Food): Promise<{ action: Action; prompt?: string } | string> {
+/**
+ * Turns what the model proposed into an Action a device can show, or an error the model can act on. `shipTo`: where a
+ * BUY ships when its fields name no Ship address (the address the owner confirmed for this order).
+ */
+export async function buildAction(db: Db, owner: Account, code: unknown, rawFields: unknown, money: Money = demoMoney(), purchases?: Purchases, food?: Food, shipTo?: string): Promise<{ action: Action; prompt?: string } | string> {
   const f = readFields(rawFields);
   const fields: ActionField[] = [];
   const person = (label: string): Account | string => {
@@ -374,7 +383,9 @@ export async function buildAction(db: Db, owner: Account, code: unknown, rawFiel
     case "BUY": {
       // Paid in ETH to the treasury, so Ethereum mode only; the server quotes, caps and builds the transfer.
       if (!purchases || money.mode !== "eth") return "Error: buying on Amazon is not available on this server. Tell the owner it cannot be done here.";
-      return purchases.propose(owner, f.get("item") ?? f.get("asin") ?? "");
+      // Ships to the address named for this order, else the confirmed one, else the owner's saved one; purchases refuses without any.
+      const ship = f.get("ship") ?? f.get("ship to") ?? f.get("address") ?? shipTo;
+      return purchases.propose(owner, f.get("item") ?? f.get("asin") ?? "", ship ? { shipTo: ship } : undefined);
     }
     case "EAT": {
       // Paid in USDC to the treasury like BUY; the quote id names a draft from quote_doordash that only this owner can pay for.
@@ -413,10 +424,33 @@ export function ownerTools(deps: {
   phone?: PhoneLinks;
   /** Ordering food on DoorDash with USDC, where the server is set up for it (Ethereum mode only). */
   food?: Food;
+  /**
+   * Texts (the persona's tasks): the delivery address the owner confirmed for this order, or null when they have not.
+   * Food and Amazon orders then go to it, or to an address the task names, and never fall back on the saved address
+   * unconfirmed. Unset (calls, the voice tools): orders default to the saved address.
+   */
+  orderAddress?: string | null;
 }): Tools {
   const { db, approvals, owner, calendar, purchases, phone } = deps;
   const money = deps.money ?? demoMoney();
   const food = money.mode === "eth" ? deps.food : undefined;
+  // Saving the owner's own address in this task confirms it: they just gave it.
+  let confirmed = deps.orderAddress;
+  /**
+   * Where an order goes: an address the model names (one the owner gave for this order), else the confirmed one;
+   * unchecked (calls), the store's default (the saved one). The saved address copied from the facts is no way around
+   * the question: unconfirmed, it gets the error that sends "Deliver to ...?" back to the owner.
+   */
+  const orderAddress = (given: unknown, verb: "deliver" | "ship"): { address?: string } | string => {
+    const named = cleanAddress(typeof given === "string" ? given : "");
+    if (confirmed === undefined) return named ? { address: named } : {};
+    const saved = savedAddress(db, owner);
+    const isSaved = !!named && !!saved && (mentionsAddress(saved, named) || mentionsAddress(named, saved));
+    if (named && (confirmed || !isSaved)) return { address: named };
+    if (confirmed) return { address: confirmed };
+    if (!saved) return noAddress(verb);
+    return `${UNCONFIRMED_ADDRESS} Do not search or order yet; report that you need them to confirm "${verb === "ship" ? "Ship" : "Deliver"} to ${saved}?"`;
+  };
   const meetings: MeetingDeps = { db, calendar, channel: deps.channel, log: deps.log, approvals, deliver: deps.deliver, onProposed: deps.onProposed };
   const settled = (line: string) => {
     if (!/^(Error|Refused)\b/.test(line)) deps.onSettled?.(line);
@@ -434,6 +468,7 @@ export function ownerTools(deps: {
     specs: [
       ...OWNER_TOOL_SPECS,
       ...(purchases ? PURCHASE_TOOL_SPECS : []),
+      ...(purchases || food ? [DELIVERY_ADDRESS_SPEC] : []),
       ...(food ? FOOD_TOOL_SPECS : []),
       ...(purchases || food ? [LIST_PURCHASES_SPEC] : []),
       ...(phone ? PHONE_TOOL_SPECS : []),
@@ -455,17 +490,23 @@ export function ownerTools(deps: {
           if (!purchases && !food) return "Error: buying on Amazon is not available on this server.";
           // Both stores, newest first.
           return JSON.stringify([...(purchases?.list(me.id) ?? []), ...(food?.list(me.id) ?? [])].sort((a, b) => String(b.at).localeCompare(String(a.at))));
-        case "set_delivery_address":
+        case "set_delivery_address": {
+          if (!purchases && !food) return "Error: ordering food or buying on Amazon is not available on this server.";
+          const saved = saveAddress(db, me, String(args.address ?? ""), deps.log);
+          if (!saved.startsWith("Error") && confirmed !== undefined) confirmed = cleanAddress(String(args.address));
+          return saved;
+        }
         case "search_doordash":
         case "doordash_menu":
         case "quote_doordash": {
           if (!food) return "Error: ordering food is not available on this server.";
-          if (name === "set_delivery_address") return food.setAddress(me, String(args.address ?? ""));
-          if (name === "search_doordash") return food.restaurants(me, String(args.query ?? ""), args.address ? String(args.address) : undefined);
           if (name === "doordash_menu") return food.menu(String(args.store_id ?? ""));
+          const to = orderAddress(args.address, "deliver");
+          if (typeof to === "string") return to;
+          if (name === "search_doordash") return food.restaurants(me, String(args.query ?? ""), to.address);
           const items = Array.isArray(args.items) ? (args.items as { item_id?: unknown; quantity?: unknown }[]).map((i) => ({ itemId: String(i?.item_id ?? "").trim(), quantity: Number(i?.quantity ?? 1) })) : [];
           const tip = args.tip_percent === undefined || args.tip_percent === null || args.tip_percent === "" ? undefined : Number(args.tip_percent);
-          return food.quote(me, { storeId: String(args.store_id ?? ""), items, ...(tip !== undefined ? { tipPercent: tip } : {}), ...(args.address ? { address: String(args.address) } : {}) });
+          return food.quote(me, { storeId: String(args.store_id ?? ""), items, ...(tip !== undefined ? { tipPercent: tip } : {}), ...(to.address ? { address: to.address } : {}) });
         }
         case "get_balance":
           return `Balance: ${await money.balanceText(me)}`;
@@ -584,7 +625,14 @@ export function ownerTools(deps: {
           return settled(`Ledger policy is now ${describePolicy(next)} Takes effect right away.`);
         }
         case "propose_action": {
-          const proposal = await buildAction(db, me, args.code, args.fields, money, purchases, food);
+          let shipTo: string | undefined;
+          if (args.code === "BUY" && purchases && money.mode === "eth") {
+            const f = readFields(args.fields);
+            const to = orderAddress(f.get("ship") ?? f.get("ship to") ?? f.get("address"), "ship");
+            if (typeof to === "string") return to;
+            shipTo = to.address;
+          }
+          const proposal = await buildAction(db, me, args.code, args.fields, money, purchases, food, shipTo);
           if (typeof proposal === "string") return proposal;
           const { action, prompt } = proposal;
           const guard = guardOf(action.code);

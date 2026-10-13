@@ -41,12 +41,12 @@ export interface AccountApiDeps {
   money: Pick<Money, "mode" | "balanceText">;
   /** Absent: calls are off on this server. */
   phone?: Pick<PhoneLinks, "number" | "link" | "unlink" | "numbersOf">;
-  /** Absent: Amazon is off. */
-  purchases?: { limitCents: number; shipsTo: string };
+  /** Absent: Amazon is off. `shipsTo`: the Amazon account's own address in words; orders ship to the owner's delivery address, so the page does not show it. */
+  purchases?: { limitCents: number; shipsTo?: string };
   /** Absent: food is off. */
   food?: { limitCents: number; provider: string };
   /** What the owner talks on, and Jarvis's number or @bot there. */
-  channel: { kind: "iMessage" | "Telegram" | "dev"; jarvis?: string };
+  channel: { kind: "iMessage" | "Telegram" | "dev"; jarvis?: string; /** The number "Text Jarvis" opens Messages with (E.164). */ text?: string };
   /** The server's own origin (PUBLIC_URL); sign links come from approvals built on it. */
   publicUrl: string;
   /** Extra origins the page may be served from (DASHBOARD_ORIGINS); PUBLIC_URL's origin is always allowed. */
@@ -190,16 +190,19 @@ export function createAccountApi(deps: AccountApiDeps): { routes: Routes } {
         : { id: "phone", name: "Phone calls", status: "available", summary, actions };
     }
 
-    const amazon: ConnectionView = deps.purchases
-      ? { id: "amazon", name: "Amazon", status: "connected", summary: `Pay in USDC on Base, up to ${formatCents(deps.purchases.limitCents)} per order, shipped to ${deps.purchases.shipsTo}.`, actions: [] }
-      : { id: "amazon", name: "Amazon", status: "unavailable", summary: "Buying on Amazon is not set up on this server.", actions: [] };
+    // Both stores use the one saved delivery address, shown as the detail; without it, the summary asks for it.
+    const address = account.delivery_address ?? undefined;
+    const ask = " Tell Jarvis your address first.";
+    let amazon: ConnectionView = { id: "amazon", name: "Amazon", status: "unavailable", summary: "Buying on Amazon is not set up on this server.", actions: [] };
+    if (deps.purchases) {
+      const summary = `Pay in USDC on Base, up to ${formatCents(deps.purchases.limitCents)} per order, shipped to your delivery address.`;
+      amazon = address ? { id: "amazon", name: "Amazon", status: "connected", summary, detail: address, actions: [] } : { id: "amazon", name: "Amazon", status: "connected", summary: `${summary}${ask}`, actions: [] };
+    }
 
     let doordash: ConnectionView = { id: "doordash", name: "DoorDash", status: "unavailable", summary: "Ordering food is not set up on this server.", actions: [] };
     if (deps.food) {
       const summary = `Order food, up to ${formatCents(deps.food.limitCents)} per order, paid in USDC on Base.`;
-      doordash = account.delivery_address
-        ? { id: "doordash", name: "DoorDash", status: "connected", summary, detail: account.delivery_address, actions: [] }
-        : { id: "doordash", name: "DoorDash", status: "connected", summary: `${summary} Tell Jarvis your delivery address first.`, actions: [] };
+      doordash = address ? { id: "doordash", name: "DoorDash", status: "connected", summary, detail: address, actions: [] } : { id: "doordash", name: "DoorDash", status: "connected", summary: `${summary}${ask}`, actions: [] };
     }
     return [chat, ledger, google, calls, amazon, doordash];
   }
@@ -210,7 +213,7 @@ export function createAccountApi(deps: AccountApiDeps): { routes: Routes } {
       tag: f.tag,
       status: f.status === "accepted" ? "accepted" : f.requested_by === f.id ? "pending" : "requested",
     }));
-    const activity: ActivityView[] = db.actionsOf(account.id, 20).map((r) => ({
+    const activity: ActivityView[] = db.actionsOf(account.id, 50).map((r) => ({
       id: r.id, code: r.code, title: titleOf(r.code), summary: fieldLine(r), status: r.status, at: iso(r.created_at),
       ...(r.tx_hash ? { link: txLink(r.tx_hash) } : {}),
     }));
@@ -223,7 +226,7 @@ export function createAccountApi(deps: AccountApiDeps): { routes: Routes } {
       address,
       createdAt: iso(account.created_at),
       ...(account.display_name ? { displayName: account.display_name } : {}),
-      channel: { kind: deps.channel.kind, handle: db.primaryHandle(account.id) ?? "", ...(deps.channel.jarvis ? { jarvis: deps.channel.jarvis } : {}) },
+      channel: { kind: deps.channel.kind, handle: db.primaryHandle(account.id) ?? "", ...(deps.channel.jarvis ? { jarvis: deps.channel.jarvis } : {}), ...(deps.channel.text ? { text: deps.channel.text } : {}) },
       ...(bal ? { balance: bal } : {}),
       explorerUrl: `https://basescan.org/address/${address}`,
       policy: policyView(policyOf(account)),

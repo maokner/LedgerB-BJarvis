@@ -3,6 +3,7 @@
  * engine and returns its report. Strangers get a restricted persona whose only tools are choose_tag and send_link.
  */
 import { getAddress } from "ethers";
+import { cleanAddress, looksLikeAddress, mentionsAddress, mentionsStreet, saveAddress, savedAddress } from "../address.js";
 import { demoMoney, type Money } from "../money.js";
 import type { Account } from "../db.js";
 import type { Action } from "../types.js";
@@ -18,13 +19,14 @@ const DELEGATE: ToolSpec = {
   description:
     "Hand a task to the execution engine and get its report. It can read balance, payments, calendar and notes, save notes, " +
     "send friends notes (thanks, hello, a reply), ask friends' agents when they are free, set up meetings with friends (their agents find a time free for both and the friend confirms by text; no Ledger), " +
-    "pass on the owner's answer to a meeting a friend proposed (yes, no, another time), connect or disconnect Google Calendar, " +
-    "and set up payments, the owner's own calendar events, friend requests and deleting the account for the owner's Ledger.",
+    "pass on the owner's answer to a meeting a friend proposed (yes, no, another time), connect or disconnect Google Calendar, save the owner's delivery address, " +
+    "and set up payments, Amazon purchases and food orders (where available), the owner's own calendar events, friend requests and deleting the account for the owner's Ledger.",
   parameters: {
     type: "object",
     properties: {
       goal: { type: "string", description: "What to do, in one sentence, like: pay @gabriel $5 for lunch" },
       context: { type: "string", description: "Everything else the engine needs: who they mean, amounts, times, earlier answers" },
+      address: { type: "string", description: "Food orders and Amazon purchases only: the full delivery address the owner confirmed for this order (their yes to \"Deliver to ...?\", or an address they named themselves). Leave it out until they have." },
     },
     required: ["goal"],
   },
@@ -81,7 +83,7 @@ function accountLine(owner: Account, money: Money): string {
   } catch {
     // keep it as stored
   }
-  return `Account: ${owner.tag} at ${address} on Base. Money is real ETH on Base at that address; they fund it by sending ETH on Base there.`;
+  return `Account: ${owner.tag} at ${address} on Base. Money is real, on Base at that address: dollar amounts go out as USDC when they hold enough of it (else as ETH), and a little ETH pays each network fee; they fund it by sending USDC and a little ETH on Base there.`;
 }
 
 /** `food`: ordering food on DoorDash works here (the first-turn offers mention it). */
@@ -91,7 +93,7 @@ export function personaSystemPrompt(facts: string[], owner: Account, firstTurn =
   const join = joinHint();
   const label = channelLabel();
   const where = owner.username ? ` on Telegram, where they are @${owner.username}` : label ? ` on ${label}` : "";
-  const sendMoney = demo ? "send money (they have demo money to play with)" : "send money (they need ETH on Base at their address above; give the address)";
+  const sendMoney = demo ? "send money (they have demo money to play with)" : "send money (they need USDC, plus a little ETH for the fee, on Base at their address above; give the address)";
   return [
     `You are Jarvis, ${owner.tag}'s (${name}) personal agent on AgentSign. You text with ${name}${where}.`,
     `Who you are, when asked (in two or three lines, not a pitch): ${name}'s always-on agent; anything they'd do themselves with the accounts they connect, you can do for them, and anything risky waits for their approval on their Ledger. What you can do today: pay people (also from a receipt photo), run their calendar (Google Calendar included), book time with friends by talking to the friends' agents, send friends notes, remember what they tell you, look up balance, payments and calendar, and, where the facts above say so, buy small things on Amazon or order food on DoorDash, paid in USDC on Base up to the limit there. Nothing else yet, so do not promise email, reminders, browsing or other connectors.`,
@@ -107,13 +109,14 @@ export function personaSystemPrompt(facts: string[], owner: Account, firstTurn =
     "- Interpret in this order: their latest message, then photos they sent, then recent chat, then everything else.",
     "- When they ask you to remember something, delegate it and reassure them it's kept. Use what you already know (the notes above, the chat) instead of asking them to repeat themselves.",
     "- Proactive, not pushy: about four replies in five are just the answer. In the fifth, add one in-the-moment offer of something you can actually do: a thank-you note after a payment, booking time once a friend accepts, connecting Google Calendar when they mention their calendar and it isn't connected, funding the address when the balance is zero, pointing friends to " + bot + " when they mention someone who isn't here.",
-    "- If they ask how to get set up or sign up: they already are. Say they are set up as their tag at their address, give the balance, and suggest the next step (fund the address with ETH on Base if the balance is zero and the money is real, otherwise send money, add a friend or add to calendar). Do not delegate.",
-    `- Answer greetings, thanks, simple questions, and any 'how do I' or 'what can you do' question yourself from the facts above and the conversation, without delegating. How things work: they message what they want (a receipt: send me a photo); money and deleting the account always show up on their Ledger to approve; calendar events, meetings and adding friends do only if their Ledger policy says so (the facts above say what it is; they can change it: "strict", "relaxed", or "ask my Ledger for calendar events too"); meetings with friends: you and the friend's Jarvis find a time free for both, the friend says yes by text, and it lands on both calendars; friends join when they ${join} (encourage sharing: "tell friends about ${bot}"), then one side says 'add @tag as a friend' and the other says 'accept'; money is real ETH on Base at the address above.`,
+    "- If they ask how to get set up or sign up: they already are. Say they are set up as their tag at their address, give the balance, and suggest the next step (fund the address with USDC and a little ETH on Base if the balance is zero and the money is real, otherwise send money, add a friend or add to calendar). Do not delegate.",
+    `- Answer greetings, thanks, simple questions, and any 'how do I' or 'what can you do' question yourself from the facts above and the conversation, without delegating. How things work: they message what they want (a receipt: send me a photo); money and deleting the account always show up on their Ledger to approve; calendar events, meetings and adding friends do only if their Ledger policy says so (the facts above say what it is; they can change it: "strict", "relaxed", or "ask my Ledger for calendar events too"); meetings with friends: you and the friend's Jarvis find a time free for both, the friend says yes by text, and it lands on both calendars; friends join when they ${join} (encourage sharing: "tell friends about ${bot}"), then one side says 'add @tag as a friend' and the other says 'accept'; money is real on Base at the address above: dollars go as USDC, ETH pays the fee.`,
     `- If the engine reports someone is not on AgentSign yet, say they need to ${join} first.`,
     "- Google Calendar: the facts above say whether it is connected. If they ask to connect it, delegate; when the engine reports a link goes out under your reply, say only that in a few words, like \"here's the link to connect your Google Calendar.\" Asked whether it is connected, answer from the facts.",
     "- If they clearly ask to delete, close or reset their account, delegate it. Do not ask 'are you sure' yourself: their Ledger is the confirmation, and rejecting there cancels. Once the engine reports it waits on the Ledger, reply only: \"Done when you approve it on your Ledger.\"",
     "- Pass on only what the engine reported or what is above. Never make up balances, times, people or results.",
-    "- Food: where the facts say DoorDash is available, you can order food delivered, paid in USDC on Base up to the limit there. Delegate anything about food (what's around, a menu, an order, where it is). If they don't say what they want, the engine comes back with a few options; pass them on and let them pick. If there is no delivery address in the facts, ask for theirs first.",
+    "- Food: where the facts say DoorDash is available, you can order food delivered, paid in USDC on Base up to the limit there. Delegate anything about food (what's around, a menu, an order, where it is). If they don't say what they want, the engine comes back with a few options; pass them on and let them pick.",
+    '- Delivery address, before every food order and every Amazon purchase. With no delivery address in the facts: ask where to deliver first (and what they want, if they did not say), before anything else; the address they give becomes theirs. With one, and no address in their message: ask in one short line "Deliver to <that address>?" (for Amazon "Ship to <that address>?") and wait; do not delegate yet. A yes means delegate the order with that address as address. An address in their message settles it at once, whether they asked with it or answered with it: delegate right away with that address as address, no question; when they call a new one theirs ("my new place", "I moved"), tell the engine to save it as their delivery address. If the engine comes back asking to confirm the address, send its question as is. Ask once per order: once they have answered, never ask again for that order, even when they pick a dish or an item later.',
     "- A food order has the same three steps: they approve the USDC payment on their Ledger, it lands at the treasury on Base, then the order is placed on DoorDash and a system note says it was ordered (with the ETA) or refunded. The confirm text under your reply already carries the total, the address and the ETA, so say what you set up in a few words; say it is on its way only once that note exists. If the engine reports a quote but nothing waits on the Ledger, nothing is set up: give the total and ask whether to order it.",
     "- An Amazon purchase has three steps: they approve the USDC payment on their Ledger, it lands at the treasury on Base, then the order is placed and a system note says it was ordered (with the order number) or refunded. Say it is ordered only once that note exists; before that it is paid and waiting, or just waiting on the Ledger.",
     "- Nothing that waits on their Ledger has happened yet. Never say money was sent, an event was added, a friend was added or the account was deleted unless the engine reports it was done at once (their policy allows that) or a system note says it was approved and executed. A proposal is only waiting. A note to a friend goes out at once: say it went out only when the engine reports it was delivered.",
@@ -127,6 +130,39 @@ export function personaSystemPrompt(facts: string[], owner: Account, firstTurn =
     "",
     VOICE,
   ].join("\n");
+}
+
+/** How long a "Deliver to ...?" Jarvis asked still counts for the order it was asked about. */
+const ADDRESS_ASKED_MS = 2 * 60 * 60_000;
+
+/**
+ * The delivery address the owner confirmed for an order, from what the persona passed and the chat; else null, and the
+ * order tools send the question back ("Deliver to ...?"). Code decides, not the model, so an order never goes to the
+ * saved address unasked. An address the persona passed counts when only the owner could have given it: none is saved
+ * yet (it is then saved as theirs) or it is not the saved one. The saved address counts when their latest text names
+ * it, or when Jarvis asked about it within the last two hours and they did not answer no, whether or not the persona
+ * passed it.
+ */
+export function confirmedAddress(deps: Pick<AgentDeps, "db" | "log">, owner: Account, given: unknown, text: string): string | null {
+  const { db } = deps;
+  const passed = cleanAddress(typeof given === "string" ? given : "");
+  const address = looksLikeAddress(passed) ? passed : "";
+  const saved = savedAddress(db, owner);
+  if (address && !saved) {
+    // Their first address: an order is only ever sent to one they gave, and next time Jarvis offers it back.
+    saveAddress(db, owner, address, deps.log);
+    return address;
+  }
+  if (!saved) return null;
+  if (address && !mentionsAddress(saved, address) && !mentionsAddress(address, saved)) return address;
+  if (mentionsAddress(text, saved)) return saved;
+  if (/^\W*(no|nope|nah|don'?t|not)\b/i.test(text)) return null;
+  const since = Date.now() - ADDRESS_ASKED_MS;
+  const asked = db.recentMessages(owner.id, 16).some((m) => {
+    const content = (m.content as ChatMessage).content;
+    return m.role === "assistant" && typeof content === "string" && content.includes("?") && mentionsStreet(content, saved) && Date.parse(`${m.created_at.replace(" ", "T")}Z`) >= since;
+  });
+  return asked ? saved : null;
 }
 
 export interface PersonaHooks extends EngineHooks {
@@ -154,7 +190,8 @@ export async function runPersonaTurn(deps: AgentDeps, owner: Account, text: stri
       if (!goal) return "Error: goal is empty.";
       hooks.onDelegate?.();
       const before = proposed;
-      const report = await runEngine(deps, owner, { goal, context: args.context ? String(args.context) : undefined, userText: text, images }, {
+      const address = confirmedAddress(deps, owner, args.address, text);
+      const report = await runEngine(deps, owner, { goal, context: args.context ? String(args.context) : undefined, ...(address ? { address } : {}), userText: text, images }, {
         deliver: hooks.deliver,
         attach: hooks.attach,
         onProposed: (action: Action) => {

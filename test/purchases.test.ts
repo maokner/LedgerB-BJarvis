@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { newActionId } from "../src/actions.js";
 import { openDb } from "../src/db.js";
 import { signOnEthApp, verifyEthSignature } from "../src/device/eth.js";
-import { alwaysOrderedMerchant, DEMO_CATALOG, demoMerchant, type DemoItem, type Outcome } from "../src/merchant.js";
+import { alwaysOrderedMerchant, DEMO_CATALOG, demoMerchant, type DemoItem, type Outcome, type Quote, WrongAddress } from "../src/merchant.js";
 import { baseMoney } from "../src/money.js";
 import { createPurchases, type Purchases } from "../src/purchases.js";
 import { createTreasury } from "../src/treasury.js";
@@ -18,9 +18,10 @@ const addr = (w: Wallet) => w.address.toLowerCase();
 const OPERATOR = "+14155550099";
 const GUM = DEMO_CATALOG[0]!; // $3.99, $4.35 all in
 const MOUSE = DEMO_CATALOG[3]!; // $99.99
+const HOME = "1 Market St Apt 5, San Francisco, CA 94105";
 
 /** The whole app in Ethereum mode with one buyer (@matt), the demo store and a funded treasury. */
-async function setup(options: { catalog?: DemoItem[]; treasuryEth?: string; mattUsdc?: bigint; receipt?: "confirmed" | "failed" | "timeout"; onConfirm?: (q: { asin: string }) => Outcome | undefined } = {}) {
+async function setup(options: { catalog?: DemoItem[]; treasuryEth?: string; mattUsdc?: bigint; receipt?: "confirmed" | "failed" | "timeout"; onConfirm?: (q: { asin: string }) => Outcome | undefined; address?: string | null } = {}) {
   const { chain, sent } = stubChain(
     { [addr(matt)]: parseEther("0.05"), [addr(vault)]: parseEther(options.treasuryEth ?? "0.01") },
     4000,
@@ -39,16 +40,22 @@ async function setup(options: { catalog?: DemoItem[]; treasuryEth?: string; matt
   });
   await h.send(PHONES.matt, "@matt");
   const owner = h.db.accountByTag("@matt")!;
+  if (options.address !== null) {
+    h.db.setDeliveryAddress(owner.id, options.address ?? HOME);
+    // Jarvis already asked about the saved address for this order, so the persona's address counts as confirmed.
+    h.db.addMessage(owner.id, "assistant", { role: "assistant", content: `Ship to ${options.address ?? HOME}?` });
+  }
   return { ...h, sent, devices, merchant, treasury, purchases, owner, chain };
 }
 
 /** The engine's usual path: search, then BUY with the first result's id. */
 const buyScript = (asin: string, afterSearch?: (json: string) => void) => [
-  delegate("buy gum"),
+  delegate("buy gum", undefined, HOME),
   (req: Parameters<typeof isEngine>[0]) => {
     expect(isEngine(req)).toBe(true);
-    expect(req.tools.map((t) => t.name)).toEqual(expect.arrayContaining(["search_amazon", "list_purchases", "propose_action"]));
+    expect(req.tools.map((t) => t.name)).toEqual(expect.arrayContaining(["search_amazon", "set_delivery_address", "list_purchases", "propose_action"]));
     expect(req.system).toContain("Amazon: @matt can buy things there through you, up to $20.00 per order all in, paid in USDC on Base");
+    expect(req.system).toContain(`Delivery address: ${HOME}. Amazon orders go there unless @matt names another address for one order.`);
     expect(req.system).toContain("Balance: 0.05 ETH ($200.00) and 50 USDC on Base.");
     return call("search_amazon", { query: "trident gum" });
   },
@@ -66,7 +73,7 @@ describe("buying on Amazon with ETH", () => {
       ...buyScript(GUM.asin, (json) => {
         const out = JSON.parse(json) as { limit: string; ships_to: string; results: { asin: string; price: string }[] };
         expect(out.limit).toBe("$20.00 per order, all in (item, shipping, tax)");
-        expect(out.ships_to).toBe("Matt's address");
+        expect(out.ships_to).toBe("the owner's delivery address (in the facts), or Ship <address> on propose_action BUY for another one");
         expect(out.results[0]).toMatchObject({ asin: GUM.asin, price: "$3.99" });
       }),
     );
@@ -79,6 +86,7 @@ describe("buying on Amazon with ETH", () => {
     const action = h.db.action((h.db.raw.prepare("select id from actions where code = 'BUY'").get() as { id: string }).id)!;
     expect(action.fields).toEqual([
       { label: "Item", value: "Trident Original Sugar Free Gum, 14 Pieces (P..." },
+      { label: "Ship", value: "1 Market St Apt 5, San Francisco" },
       { label: "Total", value: "$4.35" },
       { label: "USDC", value: "4.35" },
       { label: "To", value: h.treasury.address },
@@ -86,15 +94,18 @@ describe("buying on Amazon with ETH", () => {
     expect([action.status, action.tx_hash]).toEqual(["executed", tx.hash]);
 
     const purchase = h.db.purchase(action.id)!;
+    // The row keeps the address with the quote, so a restart still orders to it.
+    expect((JSON.parse(purchase.quote) as Quote).shipTo).toBe(HOME);
+    expect(h.merchant.confirmed.map((q) => q.shipTo)).toEqual([HOME]);
     expect(purchase).toMatchObject({ status: "ordered", asin: GUM.asin, total_cents: 435, wei: "4350000", asset: "USDC", fund_tx_hash: tx.hash, buyer: addr(matt), treasury: h.treasury.address });
     expect(purchase.order_id).toMatch(/^\d{3}-\d{7}-\d{7}$/);
     expect(h.merchant.confirmed.map((q) => q.asin)).toEqual([GUM.asin]);
 
     const link = `https://basescan.org/tx/${tx.hash}`;
     expect(h.to(PHONES.matt).slice(-3)).toEqual([
-      `Gum coming right up.\n\nPlease confirm on your Ledger: Buy on Amazon: Trident Original Sugar Free Gum, 14 Pieces (P..., $4.35 all in. That is 4.35 USDC to the AgentSign treasury ${h.treasury.address}; it ships to Matt's address, and comes back to you if the order doesn't go through.`,
+      `Gum coming right up.\n\nPlease confirm on your Ledger: Buy on Amazon: Trident Original Sugar Free Gum, 14 Pieces (P..., $4.35 all in. That is 4.35 USDC to the AgentSign treasury ${h.treasury.address}; it ships to ${HOME}, and comes back to you if the order doesn't go through.`,
       `Paid 4.35 USDC ($4.35) to the treasury on Base for Trident Original Sugar Free Gum, 14 Pieces (P.... I'll place the Amazon order as soon as Base confirms it. ${link}`,
-      `Order confirmed on Amazon: ${GUM.title}. Order ${purchase.order_id}, paid 4.35 USDC ($4.35). It ships to Matt's address.`,
+      `Order confirmed on Amazon: ${GUM.title}. Order ${purchase.order_id}, paid 4.35 USDC ($4.35). It ships to ${HOME}.`,
     ]);
     // No generic "Confirmed on Base" text: the order text is the confirmation.
     expect(h.to(PHONES.matt).some((t) => t.startsWith("Confirmed on Base"))).toBe(false);
@@ -103,6 +114,98 @@ describe("buying on Amazon with ETH", () => {
     const notes = h.db.recentMessages(h.owner.id).filter((m) => m.role === "system").map((m) => (m.content as { content: string }).content);
     expect(notes.at(-1)).toBe(`Amazon purchase Trident Original Sugar Free Gum, 14 Pieces (P... ($4.35): ordered on Amazon, order ${purchase.order_id}.`);
     expect(h.purchases.list(h.owner.id)).toEqual([expect.objectContaining({ item: GUM.title, total: "$4.35", paid: "4.35 USDC", status: "ordered", order: purchase.order_id, payment: link })]);
+  });
+
+  it("needs a delivery address: without one it asks, the owner's own is saved for next time, and Ship sends one order elsewhere", async () => {
+    const h = await setup({ address: null });
+    const WORK = "500 Howard St, San Francisco, CA 94105";
+    h.script(
+      delegate("buy gum"),
+      (req) => {
+        expect(req.system).toContain("Delivery address: none saved yet; ask for it as soon as they want to order (amazon orders go there).");
+        return call("propose_action", { code: "BUY", fields: { Item: GUM.asin } });
+      },
+      (req) => {
+        expect(req.messages.at(-1)!.content).toBe("Error: there is no delivery address. Ask the owner where to ship; when they give their own, save it with set_delivery_address.");
+        return say("No delivery address yet; ask where to ship.");
+      },
+      say("Where should I ship it?"),
+    );
+    await h.send(PHONES.matt, "buy me gum");
+    expect([h.sent.length, h.db.raw.prepare("select count(*) as n from purchases").get()]).toEqual([0, { n: 0 }]);
+    expect(h.to(PHONES.matt).at(-1)).toBe("Where should I ship it?");
+
+    // Their own address is saved (the tool is there with Amazon alone), and the BUY in the same task reads it fresh.
+    h.devices.options[0]!.reject = true;
+    h.script(
+      delegate("buy the gum", `ship to ${HOME}, their own address`),
+      () => call("set_delivery_address", { address: HOME }),
+      (req) => {
+        expect(req.messages.at(-1)!.content).toBe(`Saved @matt's delivery address: ${HOME}.`);
+        return call("propose_action", { code: "BUY", fields: { Item: GUM.asin } });
+      },
+      say("Gum to 1 Market St."),
+    );
+    await h.send(PHONES.matt, HOME);
+    expect(h.db.account(h.owner.id)!.delivery_address).toBe(HOME);
+    const first = h.db.purchasesIn(["cancelled"])[0]!;
+    expect((JSON.parse(first.quote) as Quote).shipTo).toBe(HOME);
+
+    // Ship sends just this order to another address; the saved one stays. A Ship that is not an address is refused.
+    h.script(
+      delegate("buy gum, ship it to work", `ship to ${WORK} this time`),
+      () => call("propose_action", { code: "BUY", fields: { Item: GUM.asin, Ship: "my office" } }),
+      (req) => {
+        expect(req.messages.at(-1)!.content).toBe("Error: Ship does not look like a street address. Ask the owner for the full one: number, street, city (and apartment, if any).");
+        return call("propose_action", { code: "BUY", fields: [{ label: "Item", value: GUM.asin }, { label: "Ship", value: WORK }] });
+      },
+      say("Gum to the office."),
+    );
+    await h.send(PHONES.matt, "buy gum again but ship it to work, 500 howard st");
+    const action = h.db.action((h.db.raw.prepare("select id from actions where code = 'BUY' order by rowid desc").get() as { id: string }).id)!;
+    expect(action.fields.find((f) => f.label === "Ship")).toEqual({ label: "Ship", value: "500 Howard St, San Francisco" });
+    expect(h.to(PHONES.matt).at(-2)).toContain(`it ships to ${WORK}`);
+    expect(h.db.account(h.owner.id)!.delivery_address).toBe(HOME);
+    expect(h.logs.filter((l) => /failed/.test(l))).toEqual([]);
+  });
+
+  it("asks \"Ship to <saved address>?\" before a BUY the owner has not confirmed the address for", async () => {
+    const h = await setup();
+    h.db.raw.prepare("delete from messages where role = 'assistant'").run();
+    h.script(
+      delegate("buy gum", undefined, HOME),
+      () => call("propose_action", { code: "BUY", fields: { Item: GUM.asin, Ship: HOME } }),
+      (req) => {
+        expect(req.messages.at(-1)!.content).toBe(`Nothing searched or ordered yet: Matt has to confirm the address first. Ask them exactly: "Ship to ${HOME}?"`);
+        return say(`Ship to ${HOME}?`);
+      },
+    );
+    await h.send(PHONES.matt, "buy me gum");
+    expect([h.remaining(), h.sent.length, h.db.raw.prepare("select count(*) as n from purchases").get()]).toEqual([0, 0, { n: 0 }]);
+  });
+
+  it("a store that cannot ship to the owner's address refuses before the Ledger, naming the account's address only in words", async () => {
+    const db = openDb(":memory:");
+    const owner = db.createAccount("@matt", addr(matt), PHONES.matt, 0);
+    db.setDeliveryAddress(owner.id, HOME);
+    const { chain } = stubChain({ [addr(matt)]: parseEther("0.05") }, 4000, { [addr(matt)]: 50_000_000n });
+    const asked: (string | undefined)[] = [];
+    const merchant = {
+      ...demoMerchant(),
+      async prepare(_asin: string, options?: { shipTo?: string }): Promise<Quote> {
+        asked.push(options?.shipTo);
+        throw new WrongAddress(options!.shipTo!);
+      },
+    };
+    const make = (shipsTo?: string) => createPurchases({ db, merchant, treasury: createTreasury({ privateKey: vault.privateKey }, chain), money: baseMoney(chain), channel: fakeChannel().channel, shipsTo });
+    expect(await make("Matt's address").propose(owner, GUM.asin)).toBe(
+      `Error: Amazon would ship this to Matt's address, not to ${HOME}; only the operator can change the Amazon account's address. Tell the owner; do not propose it.`,
+    );
+    expect(await make().propose(owner, GUM.asin, { shipTo: "500 Howard St, San Francisco" })).toBe(
+      "Error: Amazon would ship this to the Amazon account's own address, not to 500 Howard St, San Francisco; only the operator can change the Amazon account's address. Tell the owner; do not propose it.",
+    );
+    expect(asked).toEqual([HOME, "500 Howard St, San Francisco"]);
+    expect(db.raw.prepare("select count(*) as n from purchases").get()).toEqual({ n: 0 });
   });
 
   it("refuses anything over the limit before the Ledger is involved", async () => {

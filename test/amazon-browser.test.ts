@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { createAmazonMerchant, parseStorageState } from "../src/amazon/browser.js";
 import {
-  desktopUserAgent, detectBlock, findItemCount, findItemsSubtotal, findOrderId, findOrderTotal, isCheckoutUrl, isThankYouUrl, newestOrderFor, parseCents,
-  signedInName, titleShown, toProducts, type RawResult,
+  desktopUserAgent, detectBlock, findItemCount, findItemsSubtotal, findOrderId, findOrderTotal, findShipTo, isCheckoutUrl, isThankYouUrl, newestOrderFor, parseCents,
+  shipsHere, signedInName, streetLine, titleShown, toProducts, type RawResult,
 } from "../src/amazon/pages.js";
+import { WrongAddress } from "../src/merchant.js";
 
 describe("Amazon page parsing", () => {
   it("reads prices as cents", () => {
@@ -92,6 +93,35 @@ describe("Amazon page parsing", () => {
       { asin: "B0711V757H", title: "Trident Original Sugar Free Gum, 12 Packs", priceCents: 1439, url: "https://www.amazon.com/dp/B0711V757H", rating: "4.8 out of 5 stars, 6,329 ratings" },
       { asin: "B0OPTIONS1", title: "Trident Gum Variety Pack", priceCents: null, url: "https://www.amazon.com/dp/B0OPTIONS1" },
     ]);
+  });
+
+  it("reads where the checkout ships", () => {
+    // The new checkout: the label on its own line, then the name, the street and city, and a link to skip.
+    const spc = "Checkout (1 item)\nDelivering to Matt Okner\n1 MARKET ST APT 5, SAN FRANCISCO, CA, 94105-1234, United States\nAdd delivery instructions\nChange\nPaying with Visa 1234";
+    expect(findShipTo(spc)).toBe("Matt Okner, 1 MARKET ST APT 5, SAN FRANCISCO, CA, 94105-1234, United States");
+    // The classic one and the side sheet.
+    expect(findShipTo("Review your order\nShipping to:\nMatt Okner\n1 Market St\nSan Francisco, CA 94105\n\nPayment method")).toBe("Matt Okner, 1 Market St, San Francisco, CA 94105");
+    expect(findShipTo("Arriving tomorrow\nDeliver to Matt - 1 Market St, San Francisco 94105")).toBe("Matt - 1 Market St, San Francisco 94105");
+    // Not an address: a button, a sentence in the middle of a line, or nothing at all.
+    expect(findShipTo("Use this address\nShip to this address")).toBeNull();
+    expect(findShipTo("We deliver to most addresses in the US.")).toBeNull();
+    expect(findShipTo("Order total: $15.72")).toBeNull();
+  });
+
+  it("matches the owner's street line in the checkout's address, and nothing else", () => {
+    const checkout = "Matt Okner, 1 MARKET ST, UNIT 5, SAN FRANCISCO, CA, 94105-1234, United States";
+    expect(streetLine("1 Market Street Apt. 5, San Francisco, CA 94105")).toBe("1 market st 5");
+    expect(shipsHere(checkout, "1 Market St Apt 5, San Francisco, CA 94105")).toBe(true);
+    expect(shipsHere(checkout, "1 Market Street #5, San Francisco")).toBe(true);
+    expect(shipsHere(checkout, "1 market st")).toBe(true);
+    expect(shipsHere(checkout, "1 Market St Apt 7, San Francisco")).toBe(false);
+    expect(shipsHere("Matt Okner, 21 MARKET ST, SAN FRANCISCO", "1 Market St, San Francisco")).toBe(false);
+    expect(shipsHere(checkout, "500 Howard St, San Francisco, CA 94105")).toBe(false);
+    expect(shipsHere(checkout, ", San Francisco")).toBe(false);
+    // The owner hears their own address and the account's in words, never the operator's address itself.
+    expect(new WrongAddress("500 Howard St, San Francisco").message).toBe(
+      "Amazon would ship this to the Amazon account's own address, not to 500 Howard St, San Francisco; only the operator can change the Amazon account's address",
+    );
   });
 
   it("presents as desktop Chrome with the browser's major version", () => {

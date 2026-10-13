@@ -6,7 +6,7 @@ import { describeAction, validateAction } from "./actions.js";
 import type { Calendar } from "./calendar/google.js";
 import { txLink } from "./chain.js";
 import type { ActionStatus, Db } from "./db.js";
-import { execute, ExecutorError, field } from "./executors.js";
+import { execute, ExecutorError, field, onChainAmount } from "./executors.js";
 import { demoMoney, type Money } from "./money.js";
 import { type Action, type ActionCode, ANY_DEVICE, type Channel, type DeviceManager, isPurchaseCode, type SignResult } from "./types.js";
 
@@ -166,7 +166,7 @@ export function createApprovals(deps: {
       log(`tx ${hash} ${status}`);
       const text =
         status === "confirmed"
-          ? `Confirmed on Base: ${field(j.action, "ETH")} ETH to ${field(j.action, "To")}. ${txLink(hash)}`
+          ? `Confirmed on Base: ${onChainAmount(j.action)} to ${field(j.action, "To")}. ${txLink(hash)}`
           : status === "failed"
             ? `The payment to ${field(j.action, "To")} failed on Base. ${txLink(hash)}`
             : `Still waiting for Base to confirm the payment to ${field(j.action, "To")}. You can follow it here: ${txLink(hash)}`;

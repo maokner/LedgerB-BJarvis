@@ -206,8 +206,17 @@ describe("the account view", () => {
     expect(by.google!.actions).toEqual([{ kind: "connect-google" }]);
     // The number Matt texts from counts for calls but cannot be unlinked here.
     expect(by.phone).toMatchObject({ summary: "Call Jarvis at +19406447419 from a linked number.", detail: MATT_PHONE, actions: [{ kind: "link-phone" }] });
-    expect(by.amazon).toMatchObject({ summary: "Pay in USDC on Base, up to $20.00 per order, shipped to Matt's address.", actions: [] });
+    // One saved address for both stores.
+    expect(by.amazon).toMatchObject({ summary: "Pay in USDC on Base, up to $20.00 per order, shipped to your delivery address.", detail: "1 Market St, San Francisco", actions: [] });
     expect(by.doordash).toMatchObject({ summary: "Order food, up to $40.00 per order, paid in USDC on Base.", detail: "1 Market St, San Francisco" });
+    s.db.setDeliveryAddress(s.account.id, null);
+    const bare = Object.fromEntries(((await s.get("/api/me", cookie)).body as unknown as MeView).connections.map((c) => [c.id, c]));
+    expect([bare.amazon!.summary, bare.amazon!.detail, bare.doordash!.summary, bare.doordash!.detail]).toEqual([
+      "Pay in USDC on Base, up to $20.00 per order, shipped to your delivery address. Tell Jarvis your address first.",
+      undefined,
+      "Order food, up to $40.00 per order, paid in USDC on Base. Tell Jarvis your address first.",
+      undefined,
+    ]);
     expect(me.friends).toEqual([
       { tag: "@gabe", status: "pending" },
       { tag: "@yadu", status: "requested" },

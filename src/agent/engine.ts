@@ -8,7 +8,7 @@ import { demoMoney } from "../money.js";
 import { ACTION_TITLES, type Action } from "../types.js";
 import { calendarOf, claimsProposal, deliverNote, foodOf, ownerFacts, runPeerTurn, toolLoop, type AgentDeps } from "./agent.js";
 import { firstName } from "./bot.js";
-import { ownerTools, type Tools } from "./tools.js";
+import { ownerTools, type Tools, UNCONFIRMED_ADDRESS } from "./tools.js";
 import type { ChatMessage } from "./xai.js";
 
 const MAX_STEPS = 8;
@@ -30,8 +30,9 @@ export function engineSystemPrompt(facts: string[], owner: Account): string {
     `- To meet a friend, call propose_meeting right away (no need to ask their agent first): their tag, a short title (what it is about, never their name), the window ${name} is open to, the length (30 minutes unless they said), and preferred when they named a time inside a wider window. Windows: an exact time ("at 9") is a slot of that length, 09:00 to 09:30; "around 9" is 08:30 to 10:00 with preferred 09:00; "morning" 09:00-12:00; "afternoon" 12:00-17:00; "evening" 17:00-21:00; "any time 9 to 5" or a day alone 09:00-17:00. Never use CAL for a meeting with a friend, and do not ask ${name} to pick a slot unless they asked to choose.`,
     `- When ${name} answers a meeting a friend is arranging with them (yes, no, or a different time; the facts above list them), call answer_meeting. If they name a new time for a meeting they offered themselves, answer_meeting with another time offers it.`,
     `- To send a friend a note (a thank you, a hello, a reply, anything ${name} wants to say to them), call send_note with the note written as ${name} would say it, a sentence or two. It reaches the friend at once as a text from their own Jarvis; nothing to approve. message_agent only asks when a friend is free and never passes anything on to them.`,
-    `- To buy something (only where the facts say Amazon is available): search_amazon first, pick the item that fits best within what ${name} said (cheapest match unless they said otherwise), then propose_action BUY with Item <its id>. It is paid in USDC on Base from ${name}'s address (the facts show the balance; a little ETH covers the fee). The tool quotes the exact total and refuses anything over the limit; if it does, report the price and the limit, do not look for ways around it. Never buy more than one thing per request, and never without a search result's id.`,
-    `- To order food (only where the facts say DoorDash is available): it delivers to the address in the facts. With none, ask ${name} for it; when they give their own, save it with set_delivery_address (an address for just this order goes in the address argument instead). Then search_doordash for what they want, doordash_menu for the restaurant that fits, and quote_doordash with the item_ids and quantities they asked for (tip 15% unless they said otherwise). If they did not say what they want, do not order on a guess: report two or three options (restaurant, a dish or two, prices, ETA) and stop. Otherwise propose_action EAT with Order <the quote_id> right after the quote, and report the restaurant, the items, the total all in and the ETA. Never propose EAT without a quote_id from quote_doordash, never add items they did not ask for, and if the quote is over the limit, report the total and the limit; do not look for ways around it.`,
+    `- To buy something (only where the facts say Amazon is available): search_amazon first, pick the item that fits best within what ${name} said (cheapest match unless they said otherwise), then propose_action BUY with Item <its id>. It ships to the delivery address confirmed for this order (see below); when the task gives an address for just this order, add Ship <that address>. With no address at all, ask ${name} for it; when they give their own (or call a new one theirs, like "my new place", or none is saved yet), save it with set_delivery_address first. It is paid in USDC on Base from ${name}'s address (the facts show the balance; a little ETH covers the fee). The tool quotes the exact total and refuses anything over the limit; if it does, report the price and the limit, do not look for ways around it. Never buy more than one thing per request, and never without a search result's id.`,
+    `- To order food (only where the facts say DoorDash is available): it delivers to the delivery address confirmed for this order (see below). With none at all, ask ${name} for it; when they give their own (or call a new one theirs, or none is saved yet), save it with set_delivery_address (an address for just this order goes in the address argument instead). Then search_doordash for what they want, doordash_menu for the restaurant that fits, and quote_doordash with the item_ids and quantities they asked for (tip 15% unless they said otherwise). If they did not say what they want, do not order on a guess: report two or three options (restaurant, a dish or two, prices, ETA) and stop. Otherwise propose_action EAT with Order <the quote_id> right after the quote, and report the restaurant, the items, the total all in and the ETA. Never propose EAT without a quote_id from quote_doordash, never add items they did not ask for, and if the quote is over the limit, report the total and the limit; do not look for ways around it.`,
+    `- The delivery address for an order (food or Amazon) is checked with ${name} before the task reaches you, and the task then says it was confirmed: orders go there unless you pass another address, and you never ask ${name} about it again. When no address was confirmed, the order tools say so: report the question they give, word for word, and stop.`,
     `- Use remember for lasting facts ${name} tells you.`,
     `- Phone (only where the facts have a Phone line): when ${name} gives their own number to link ("my number is", "link my phone"), call link_phone with it; unlink_phone only when asked. A four-digit code from a call is handled before you see it.`,
     `- Only if ${name} clearly asks to delete, close or reset their account, propose DEL (no fields). Never for anything less. Their Ledger is the confirmation, so do not ask them to confirm first.`,
@@ -46,6 +47,8 @@ export function engineSystemPrompt(facts: string[], owner: Account): string {
 export interface EngineTask {
   goal: string;
   context?: string;
+  /** The delivery address the owner confirmed for this order (food or Amazon), if any. Orders never default to the saved one unconfirmed. */
+  address?: string;
   /** The owner's latest text and photos, verbatim, so amounts and names are not lost in the hand-off. */
   userText: string;
   images: string[];
@@ -64,8 +67,9 @@ export interface EngineHooks {
 /**
  * The engine's tool set for one task: ownerTools plus the message_agent progress texts. Also used by phone calls
  * (src/voice/session.ts), so a call runs exactly the same harness. `proposed` collects every action proposed.
+ * `orderAddress`: see ownerTools; a text task passes the confirmed address or null, calls leave it unset.
  */
-export function engineTools(deps: AgentDeps, owner: Account, hooks: EngineHooks = {}): { tools: Tools; proposed: Action[]; settled: string[] } {
+export function engineTools(deps: AgentDeps, owner: Account, hooks: EngineHooks = {}, orderAddress?: string | null): { tools: Tools; proposed: Action[]; settled: string[] } {
   const { db } = deps;
   const notified = new Set<string>();
   const proposed: Action[] = [];
@@ -82,6 +86,7 @@ export function engineTools(deps: AgentDeps, owner: Account, hooks: EngineHooks 
     purchases: deps.purchases,
     phone: deps.phone,
     food: foodOf(deps),
+    orderAddress,
     deliver: hooks.deliver,
     attach: hooks.attach ?? (async (text) => void (await deps.channel.send(db.primaryHandle(owner.id)!, text))),
     onProposed: (action) => {
@@ -111,14 +116,17 @@ export function engineTools(deps: AgentDeps, owner: Account, hooks: EngineHooks 
 /** Runs one task and returns the report for the persona. Nothing here is persisted except what the tools do. */
 export async function runEngine(deps: AgentDeps, owner: Account, task: EngineTask, hooks: EngineHooks = {}): Promise<string> {
   const { db } = deps;
-  const { tools: engine, proposed, settled } = engineTools(deps, owner, hooks);
+  const { tools: engine, proposed, settled } = engineTools(deps, owner, hooks, task.address?.trim() || null);
   // A food quote this task produced (quote_doordash answered with a quote_id): the order is meant to go to the Ledger next.
   let quoted = false;
+  // An order tool refused because the owner has not confirmed the address: the question, which ends the task.
+  let ask: string | undefined;
   const tools: Tools = {
     specs: engine.specs,
     async run(name, args) {
       const out = await engine.run(name, args);
       if (name === "quote_doordash" && out.startsWith("{")) quoted = true;
+      if (out.startsWith(UNCONFIRMED_ADDRESS)) ask ??= /"([^"]+\?)"/.exec(out)?.[1];
       return out;
     },
   };
@@ -133,7 +141,12 @@ export async function runEngine(deps: AgentDeps, owner: Account, task: EngineTas
   const balance = await money.balanceText(owner).catch(() => "unknown right now (use get_balance)");
   const user: ChatMessage = {
     role: "user",
-    content: [`Task: ${task.goal}`, task.context ? `Context: ${task.context}` : "", `${firstName(owner)}'s latest text: ${JSON.stringify(task.userText)}`]
+    content: [
+      `Task: ${task.goal}`,
+      task.context ? `Context: ${task.context}` : "",
+      task.address?.trim() ? `Delivery address for this order, confirmed by ${firstName(owner)}: ${task.address.trim()}` : "",
+      `${firstName(owner)}'s latest text: ${JSON.stringify(task.userText)}`,
+    ]
       .filter(Boolean)
       .join("\n"),
     ...(task.images.length ? { images: task.images } : {}),
@@ -146,7 +159,9 @@ export async function runEngine(deps: AgentDeps, owner: Account, task: EngineTas
     review,
     // A proposal, or something done at once, ends the task: the report is a known fact, so skip a model call that could embellish it.
     stop: () =>
-      proposed.length || settled.length
+      ask && !proposed.length
+        ? `Nothing searched or ordered yet: ${firstName(owner)} has to confirm the address first. Ask them exactly: "${ask}"`
+        : proposed.length || settled.length
         ? [...settled, ...proposed.map((a) => `Proposed on ${owner.tag}'s Ledger: ${describeAction(a, ACTION_TITLES)}. Not done until they approve it there.`)].join("\n")
         : undefined,
     giveUp: "The engine stopped after too many steps without finishing. Nothing was proposed.",

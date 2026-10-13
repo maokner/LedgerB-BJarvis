@@ -36,6 +36,14 @@ export interface Quote {
   expiresAt: number;
   /** A food order (src/food/): the provider's full quote, which confirm() places. Unset for Amazon. */
   food?: FoodQuote;
+  /** Where an Amazon order ships: the owner's full delivery address (src/address.ts), checked again at confirm. Food quotes carry theirs in `food`. */
+  shipTo?: string;
+}
+
+/** What prepare() is asked for besides the item. */
+export interface PrepareOptions {
+  /** The full address the order must ship to. A store that cannot ship there throws MerchantError. */
+  shipTo?: string;
 }
 
 export type Outcome =
@@ -49,13 +57,28 @@ export type Outcome =
 /** A failure in plain words, safe to show the model (and through it the owner). */
 export class MerchantError extends Error {}
 
+/** What the owner hears when the store would ship elsewhere. `account`: the store account's own address, in words ("Matt's address"). */
+export const wrongAddressText = (address: string, account = "the Amazon account's own address"): string =>
+  `Amazon would ship this to ${account}, not to ${address}; only the operator can change the Amazon account's address`;
+
+/**
+ * The store's checkout ships somewhere other than the order's address (the browser store can only ship where the
+ * operator's Amazon account says). Nothing was ordered. The account's address itself stays out of the message: it is
+ * the operator's, so only the server log has it, and src/purchases.ts names it in words (PURCHASE_SHIPS_TO).
+ */
+export class WrongAddress extends MerchantError {
+  constructor(readonly address: string) {
+    super(wrongAddressText(address));
+  }
+}
+
 export interface Merchant {
   /** "Amazon" */
   readonly name: string;
   /** Up to `limit` products for a free-text query, best match first. Throws MerchantError when the store cannot be reached. */
   search(query: string, limit?: number): Promise<Product[]>;
-  /** The exact order total for one unit of `asin`, without ordering. Throws MerchantError when it cannot be bought (unavailable, needs options, cart not alone). */
-  prepare(asin: string): Promise<Quote>;
+  /** The exact order total for one unit of `asin`, without ordering. Throws MerchantError when it cannot be bought (unavailable, needs options, cart not alone, cannot ship to `shipTo`). */
+  prepare(asin: string, options?: PrepareOptions): Promise<Quote>;
   /** Places the order for a quote from prepare(). Never throws for an outcome it can name; throws only for "uncertain" bugs. */
   confirm(quote: Quote): Promise<Outcome>;
   close(): Promise<void>;
@@ -66,6 +89,9 @@ export const shortTitle = (title: string, max = 48): string => {
   const clean = title.replace(/\s+/g, " ").trim();
   return clean.length <= max ? clean : `${clean.slice(0, max - 3).trimEnd()}...`;
 };
+
+/** The demo and mock stores ship anywhere: they echo the address they were asked for. */
+const shipping = (options: PrepareOptions | undefined): Pick<Quote, "shipTo"> => (options?.shipTo ? { shipTo: options.shipTo } : {});
 
 export interface DemoItem {
   asin: string;
@@ -107,10 +133,10 @@ export function demoMerchant(catalog: DemoItem[] = DEMO_CATALOG, options: { quot
       hits.sort((a, b) => words.filter((w) => b.title.toLowerCase().includes(w)).length - words.filter((w) => a.title.toLowerCase().includes(w)).length);
       return hits.slice(0, limit).map((i) => ({ asin: i.asin, title: i.title, priceCents: i.priceCents, url: `https://www.amazon.com/dp/${i.asin}`, rating: "4.6 out of 5 stars" }));
     },
-    async prepare(asin) {
+    async prepare(asin, prepared) {
       const item = find(asin);
       if (!item) throw new MerchantError(`Nothing on ${this.name} has the item id ${asin}.`);
-      return { quoteId: `demo-q${++seq}`, asin, title: item.title, itemCents: item.priceCents, totalCents: total(item), expiresAt: Date.now() + (options.quoteTtlMs ?? 30 * 60_000) };
+      return { quoteId: `demo-q${++seq}`, asin, title: item.title, itemCents: item.priceCents, totalCents: total(item), expiresAt: Date.now() + (options.quoteTtlMs ?? 30 * 60_000), ...shipping(prepared) };
     },
     async confirm(quote) {
       const item = find(quote.asin);
@@ -143,13 +169,13 @@ export function alwaysOrderedMerchant(options: { search: Merchant["search"]; nam
       for (const p of products) seen.set(p.asin, p);
       return products;
     },
-    async prepare(asin) {
+    async prepare(asin, prepared) {
       const product = seen.get(asin) ?? (await options.search(asin, 3)).find((p) => p.asin === asin);
       if (!product) throw new MerchantError(`Nothing on ${name} has the item id ${asin}. Search first and use an id from the results.`);
       if (product.priceCents === null) throw new MerchantError(`${shortTitle(product.title, 60)} shows no price on ${name}, so it cannot be bought here.`);
       seen.set(asin, product);
       const totalCents = product.priceCents + Math.round(product.priceCents * taxRate);
-      return { quoteId: `mock-${Date.now().toString(36)}-${asin}`, asin, title: product.title, itemCents: product.priceCents, totalCents, expiresAt: Date.now() + 30 * 60_000 };
+      return { quoteId: `mock-${Date.now().toString(36)}-${asin}`, asin, title: product.title, itemCents: product.priceCents, totalCents, expiresAt: Date.now() + 30 * 60_000, ...shipping(prepared) };
     },
     async confirm(quote) {
       const orderId = `${100 + (++orders % 900)}-${String(Math.floor(Math.random() * 1e7)).padStart(7, "0")}-${String(Math.floor(Math.random() * 1e7)).padStart(7, "0")}`;

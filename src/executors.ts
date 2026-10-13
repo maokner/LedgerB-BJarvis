@@ -84,8 +84,7 @@ export function execute(db: Db, ctx: ExecContext, action: Action): ExecResult {
       // The ETH is on its way to the treasury; src/purchases.ts takes it from here (receipt, order, refund).
       if (!ctx.txHash) throw new ExecutorError("Buying needs a payment on Base, so nothing happened.");
       const item = need(action, "Item");
-      const amount = field(action, "USDC") ? `${field(action, "USDC")} USDC` : `${need(action, "ETH")} ETH`;
-      return done([{ handle: ownerHandle, text: `Paid ${amount} (${need(action, "Total")}) to the treasury on Base for ${item}. I'll place the Amazon order as soon as Base confirms it. ${txLink(ctx.txHash)}` }]);
+      return done([{ handle: ownerHandle, text: `Paid ${onChainAmount(action)} (${need(action, "Total")}) to the treasury on Base for ${item}. I'll place the Amazon order as soon as Base confirms it. ${txLink(ctx.txHash)}` }]);
     }
     case "EAT": {
       // Like BUY: the USDC is on its way to the treasury; src/purchases.ts (through src/food/) places the order once Base confirms.
@@ -143,10 +142,13 @@ function createAccount(db: Db, ctx: ExecContext, action: Action): ExecResult {
   return { notifications: [{ handle, text: ctx.createdText ?? `Account ${tag} created.` }] };
 }
 
+/** "5 USDC" or "0.00125 ETH": what a PAY, BUY or EAT moves on Base. */
+export const onChainAmount = (action: Action): string => (field(action, "USDC") ? `${field(action, "USDC")} USDC` : `${need(action, "ETH")} ETH`);
+
 /** The transfer is already on chain; record nothing but the texts (the hash is on the action row). */
 function ethPayment(db: Db, owner: Account, ownerHandle: string, action: Action, hash: string): ExecResult {
   const to = need(action, "To");
-  const amount = `${need(action, "ETH")} ETH (${need(action, "Amount")})${field(action, "Memo") ? ` for ${field(action, "Memo")}` : ""}`;
+  const amount = `${onChainAmount(action)} (${need(action, "Amount")})${field(action, "Memo") ? ` for ${field(action, "Memo")}` : ""}`;
   const recipient = to.startsWith("@") ? db.accountByTag(to) : db.accountByPubkey(to.toLowerCase());
   const notifications: Notification[] = [{ handle: ownerHandle, text: `Sent ${amount} to ${to} on Base. ${txLink(hash)}` }];
   const recipientHandle = recipient && recipient.id !== owner.id ? db.primaryHandle(recipient.id) : undefined;

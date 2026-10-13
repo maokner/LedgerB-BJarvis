@@ -247,4 +247,34 @@ describe.skipIf(!apiKey)(`live xAI (${modelName})`, () => {
     expect(sent).toHaveLength(1);
     expect(h.to(PHONES.matt).at(-1)).toMatch(/^Order placed on DoorDash: Chipotle Mexican Grill, 1x Burrito Bowl, 2x Chips\. .* It arrives at 1 Market St.* in about 25 minutes\.$/);
   });
+
+  it("checks the saved address before a food order (\"Deliver to ...?\"), and a yes orders it there", { timeout: 180_000 }, async () => {
+    const timed = timedModel();
+    const owner = new Wallet(Wallet.createRandom().privateKey);
+    const vault = new Wallet(Wallet.createRandom().privateKey);
+    const { chain, sent } = stubChain({ [owner.address.toLowerCase()]: parseEther("0.05") }, 4000, { [owner.address.toLowerCase()]: 50_000_000n });
+    const money = baseMoney(chain);
+    const h = harness(0, timed.model, {
+      money,
+      deviceManager: fakeEthDevices([owner]).manager,
+      food: (ctx) => createFood({ ...ctx, provider: demoDoorDash(), treasury: createTreasury({ privateKey: vault.privateKey }, chain), money, operator: { name: "Matt" } }),
+    });
+    await h.send(PHONES.matt, "@matt");
+    const account = h.db.accountByTag("@matt")!;
+    h.db.setDeliveryAddress(account.id, "1 Market St Apt 5, San Francisco, CA 94105");
+    const errors = () => h.logs.filter((l) => /error|failed/i.test(l)).join("\n");
+
+    await h.send(PHONES.matt, "get me a burrito bowl from chipotle");
+    console.log(`address check: ${timed.take()}; reply: ${JSON.stringify(h.to(PHONES.matt).at(-1))}`);
+    expect(h.to(PHONES.matt).at(-1)).toMatch(/deliver.*1 Market St.*\?/i);
+    expect(sent).toHaveLength(0);
+    expect(h.db.purchases(account.id, 10, "EAT")).toEqual([]);
+
+    await h.send(PHONES.matt, "yes");
+    console.log(`after yes: ${timed.take()}; texts: ${JSON.stringify(h.to(PHONES.matt).slice(-3))}`);
+    const order = h.db.purchases(account.id, 10, "EAT")[0];
+    expect(order, errors()).toMatchObject({ status: "ordered" });
+    expect(order!.title).toMatch(/^Chipotle Mexican Grill: 1x Burrito Bowl/);
+    expect(h.to(PHONES.matt).at(-1)).toMatch(/It arrives at 1 Market St Apt 5, San Francisco, CA 94105/);
+  });
 });
